@@ -1,0 +1,8 @@
+service_account.json
+.streamlit/secrets.toml
+*.xlsx
+__pycache__/
+*.pyc
+*.pyo
+.env
+si_portfolio_format.json
