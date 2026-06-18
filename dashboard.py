@@ -379,13 +379,17 @@ def main():
                 t["value"] for t in txns
                 if t["company"] == co and t["type"] == "BUY"
             )
+            sell_txns = [t for t in txns if t["company"] == co and t["type"] == "SELL"]
+            total_sold_qty = sum(t["qty"] for t in sell_txns)
+            # Most recent sell price
+            last_sell_price = sell_txns[-1]["price"] if sell_txns else 0
+            row["Qty"]        = int(round(total_sold_qty))
             row["Total Cost"] = tot_cost_paid
             row["Cur. Value"] = sell_val
             row["P&L (₹)"]   = sell_val - tot_cost_paid
             row["P&L %"]     = (sell_val - tot_cost_paid) / tot_cost_paid * 100 if tot_cost_paid else 0
-            row["Price (₹)"] = sell_val / sum(
-                t["qty"] for t in txns if t["company"] == co and t["type"] == "SELL"
-            ) if any(t["type"] == "SELL" for t in txns if t["company"] == co) else 0
+            row["Price (₹)"] = last_sell_price
+            row["Avg Cost (₹)"] = tot_cost_paid / total_sold_qty if total_sold_qty else 0
             rows_closed.append(row)
 
     df_open   = pd.DataFrame(rows_open).sort_values("Cur. Value", ascending=False).reset_index(drop=True)
