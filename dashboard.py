@@ -334,6 +334,12 @@ def inr(val):
 def main():
     st.title("Speciale Incept — Listed Portfolio")
 
+    # ── Action buttons ─────────────────────────────────────────────────────
+    _bc1, _gap = st.columns([1, 7])
+    if _bc1.button("Refresh Data"):
+        st.cache_data.clear()
+        st.rerun()
+
     raw   = load_raw_transactions()
     txns  = apply_corporate_actions(raw)
     pos   = build_positions(txns)
@@ -432,8 +438,8 @@ def main():
             hole=0.42,
             color_discrete_sequence=px.colors.qualitative.Pastel,
         )
-        fig_pie.update_traces(textposition="inside", textinfo="percent+label", textfont_size=10)
-        fig_pie.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), height=400)
+        fig_pie.update_traces(textposition="auto", textinfo="percent+label", textfont_size=12)
+        fig_pie.update_layout(showlegend=False, margin=dict(t=20, b=20, l=40, r=40), height=420)
         st.plotly_chart(fig_pie, use_container_width=True)
 
     with col_r:
@@ -446,8 +452,14 @@ def main():
             marker_color=colors,
             text=[f"{v:+.1f}%" for v in bar_df["P&L %"]],
             textposition="outside",
+            cliponaxis=False,
         ))
-        fig_bar.update_layout(xaxis_title="P&L %", margin=dict(t=10, b=10, l=10, r=90), height=400)
+        fig_bar.update_layout(
+            xaxis=dict(title="P&L %", automargin=True),
+            yaxis=dict(automargin=True),
+            margin=dict(t=10, b=10, l=10, r=110),
+            height=420,
+        )
         st.plotly_chart(fig_bar, use_container_width=True)
 
     st.divider()
@@ -559,9 +571,9 @@ def main():
     ))
     fig_wf.update_layout(
         title=f"Cash Flow Timeline — {selected}",
-        yaxis_title="₹",
-        margin=dict(t=40, b=40, l=40, r=40),
-        height=380,
+        yaxis=dict(title="₹", automargin=True),
+        margin=dict(t=60, b=40, l=60, r=60),
+        height=430,
     )
     st.plotly_chart(fig_wf, use_container_width=True)
 
