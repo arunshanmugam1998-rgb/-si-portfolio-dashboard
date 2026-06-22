@@ -931,9 +931,6 @@ def create_watchlist():
 
     apply_fmt = is_new or "--format-watchlist" in sys.argv
 
-    # ── Clear values only (never touch formatting on re-runs) ──────────────
-    ws.clear()
-
     # ── Headers (row 3) ────────────────────────────────────────────────────
     HEADERS = [
         "#", "NSE Ticker", "Company", "Sector",
