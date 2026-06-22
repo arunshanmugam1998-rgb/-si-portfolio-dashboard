@@ -918,29 +918,23 @@ def create_watchlist():
     NROWS = 100
 
     # ── Get or create sheet ────────────────────────────────────────────────
+    is_new = False
     try:
         ws = sh.worksheet("Watchlist")
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title="Watchlist", rows=NROWS + 10, cols=14)
+        is_new = True
 
-    sid      = ws.id
-    D_START  = 4               # data rows start here (rows 1-2 blank, row 3 = headers)
-    last     = D_START + NROWS - 1   # last pre-populated row number (= 103)
+    sid     = ws.id
+    D_START = 4                       # rows 1-2 blank, row 3 = headers, data from row 4
+    last    = D_START + NROWS - 1     # = 103
 
-    # ── Clear + unmerge entire sheet before rewrite ────────────────────────
+    apply_fmt = is_new or "--format-watchlist" in sys.argv
+
+    # ── Clear values only (never touch formatting on re-runs) ──────────────
     ws.clear()
-    sh.batch_update({"requests": [{"unmergeCells": {
-        "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 5,
-                  "startColumnIndex": 0, "endColumnIndex": 14},
-    }}]})
 
-    # ── Reset rows 1-2 to plain white (clear() doesn't remove cell format) ─
-    ws.format("A1:N2", {
-        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
-        "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}},
-    })
-
-    # ── Headers in row 3; rows 1-2 blank ───────────────────────────────────
+    # ── Headers (row 3) ────────────────────────────────────────────────────
     HEADERS = [
         "#", "NSE Ticker", "Company", "Sector",
         "CMP (₹)", "52W High (₹)", "52W Low (₹)",
@@ -965,131 +959,114 @@ def create_watchlist():
     fcol(f"H{D_START}:H{last}", lambda r:
          f'=IF(B{r}="","",IFERROR(TEXT(GOOGLEFINANCE("NSE:"&B{r},"marketcap")/10000000,"#,##0"),"—"))')
     fcol(f"I{D_START}:I{last}", lambda r: gf("pe", r))
+    # Last Disc. Price: ISNUMBER check (date cells store a serial, not "")
     fcol(f"K{D_START}:K{last}", lambda r:
-         f'=IF(OR(B{r}="",J{r}=""),"",IFERROR(INDEX(GOOGLEFINANCE("NSE:"&B{r},"close",J{r},J{r}+7),2,2),"—"))')
+         f'=IF(OR(B{r}="",NOT(ISNUMBER(J{r}))),"",IFERROR(INDEX(GOOGLEFINANCE("NSE:"&B{r},"close",J{r},J{r}+7),2,2),"—"))')
     fcol(f"L{D_START}:L{last}", lambda r:
          f'=IF(OR(B{r}="",NOT(ISNUMBER(K{r})),K{r}=0,NOT(ISNUMBER(E{r}))),"",TEXT((E{r}/K{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
 
     ws.freeze(rows=3)
-    print(f"Watchlist: headers (row 3) + formulas written ({NROWS} rows from row {D_START})")
+    print(f"Watchlist: headers + formulas written ({NROWS} rows)")
 
-    # ── Formatting ─────────────────────────────────────────────────────────
-    NAVY     = {"red": 0.122, "green": 0.235, "blue": 0.392}
-    WHITE    = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
-    PALE     = {"red": 0.933, "green": 0.953, "blue": 0.980}
-    POS_BG   = {"red": 0.902, "green": 0.957, "blue": 0.914}
-    NEG_BG   = {"red": 0.992, "green": 0.887, "blue": 0.882}
-    POS_TEXT = {"red": 0.118, "green": 0.408, "blue": 0.137}
-    NEG_TEXT = {"red": 0.612, "green": 0.0,   "blue": 0.004}
-    BDR_MED  = {"red": 0.122, "green": 0.235, "blue": 0.392}
+    # ── Formatting — only on first creation or --format-watchlist ──────────
+    if apply_fmt:
+        NAVY     = {"red": 0.122, "green": 0.235, "blue": 0.392}
+        WHITE    = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+        PALE     = {"red": 0.933, "green": 0.953, "blue": 0.980}
+        POS_BG   = {"red": 0.902, "green": 0.957, "blue": 0.914}
+        NEG_BG   = {"red": 0.992, "green": 0.887, "blue": 0.882}
+        POS_TEXT = {"red": 0.118, "green": 0.408, "blue": 0.137}
+        NEG_TEXT = {"red": 0.612, "green": 0.0,   "blue": 0.004}
+        BDR_MED  = {"red": 0.122, "green": 0.235, "blue": 0.392}
 
-    # Header row: navy background + white bold text
-    ws.format("A3:N3", {
-        "backgroundColor": NAVY,
-        "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": WHITE},
-        "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
-        "wrapStrategy": "WRAP",
-    })
-    # Data rows alignment
-    ws.format(f"A{D_START}:N{last}", {"textFormat": {"fontSize": 10}, "verticalAlignment": "MIDDLE"})
-    ws.format(f"A{D_START}:B{last}", {"horizontalAlignment": "CENTER"})
-    ws.format(f"C{D_START}:D{last}", {"horizontalAlignment": "LEFT"})
-    ws.format(f"E{D_START}:L{last}", {"horizontalAlignment": "RIGHT"})
-    ws.format(f"M{D_START}:N{last}", {"horizontalAlignment": "LEFT"})
+        ws.format("A3:N3", {
+            "backgroundColor": NAVY,
+            "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": WHITE},
+            "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+            "wrapStrategy": "WRAP",
+        })
+        ws.format(f"A{D_START}:N{last}", {"textFormat": {"fontSize": 10}, "verticalAlignment": "MIDDLE"})
+        ws.format(f"A{D_START}:B{last}", {"horizontalAlignment": "CENTER"})
+        ws.format(f"C{D_START}:D{last}", {"horizontalAlignment": "LEFT"})
+        ws.format(f"E{D_START}:L{last}", {"horizontalAlignment": "RIGHT"})
+        ws.format(f"M{D_START}:N{last}", {"horizontalAlignment": "LEFT"})
 
-    def rng(r0, r1, c0, c1):
-        return {"sheetId": sid,
-                "startRowIndex": r0 - 1, "endRowIndex": r1,
-                "startColumnIndex": c0,  "endColumnIndex": c1}
+        def rng(r0, r1, c0, c1):
+            return {"sheetId": sid,
+                    "startRowIndex": r0 - 1, "endRowIndex": r1,
+                    "startColumnIndex": c0,  "endColumnIndex": c1}
 
-    # Clear existing conditional format rules before adding new ones
-    meta       = sh.fetch_sheet_metadata()
-    sheet_meta = next((s for s in meta.get("sheets", [])
-                       if s["properties"]["sheetId"] == sid), {})
-    n_rules = len(sheet_meta.get("conditionalFormats", []))
-    if n_rules:
+        meta       = sh.fetch_sheet_metadata()
+        sheet_meta = next((s for s in meta.get("sheets", [])
+                           if s["properties"]["sheetId"] == sid), {})
+        n_rules = len(sheet_meta.get("conditionalFormats", []))
+        if n_rules:
+            sh.batch_update({"requests": [
+                {"deleteConditionalFormatRule": {"index": 0, "sheetId": sid}}
+                for _ in range(n_rules)
+            ]})
+
+        COL_W = [35, 90, 220, 120, 85, 85, 80, 110, 65, 120, 120, 120, 100, 250]
         sh.batch_update({"requests": [
-            {"deleteConditionalFormatRule": {"index": 0, "sheetId": sid}}
-            for _ in range(n_rules)
-        ]})
-
-    COL_W = [35, 90, 220, 120, 85, 85, 80, 110, 65, 120, 120, 120, 100, 250]
-    col_w_requests = (
-        []  # skip: saved format will be restored after batch_update
-        if os.path.exists(WATCHLIST_FORMAT_FILE) else
-        [{"updateDimensionProperties": {
-            "range": {"sheetId": sid, "dimension": "COLUMNS",
-                      "startIndex": i, "endIndex": i + 1},
-            "properties": {"pixelSize": w}, "fields": "pixelSize",
-        }} for i, w in enumerate(COL_W)]
-    )
-    requests = [
-        # Column widths (only on first run; subsequent runs restore saved format)
-        *col_w_requests,
-        # Header row (row 3) height
-        {"updateDimensionProperties": {
-            "range": {"sheetId": sid, "dimension": "ROWS",
-                      "startIndex": 2, "endIndex": 3},
-            "properties": {"pixelSize": 40}, "fields": "pixelSize",
-        }},
-        # Header bottom border
-        {"updateBorders": {
-            "range": rng(3, 3, 0, 14),
-            "bottom": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": BDR_MED}},
-        }},
-        # Alternating row shading on data rows
-        {"addConditionalFormatRule": {"index": 0, "rule": {
-            "ranges": [rng(D_START, last, 0, 14)],
-            "booleanRule": {
-                "condition": {"type": "CUSTOM_FORMULA",
-                              "values": [{"userEnteredValue": "=MOD(ROW(),2)=0"}]},
-                "format": {"backgroundColor": PALE},
-            },
-        }}},
-        # Chg since LDP: negative → red
-        {"addConditionalFormatRule": {"index": 1, "rule": {
-            "ranges": [rng(D_START, last, 11, 12)],
-            "booleanRule": {
-                "condition": {"type": "TEXT_CONTAINS",
-                              "values": [{"userEnteredValue": "-"}]},
-                "format": {"backgroundColor": NEG_BG,
-                           "textFormat": {"foregroundColor": NEG_TEXT, "bold": True}},
-            },
-        }}},
-        # Chg since LDP: positive → green
-        {"addConditionalFormatRule": {"index": 2, "rule": {
-            "ranges": [rng(D_START, last, 11, 12)],
-            "booleanRule": {
-                "condition": {"type": "CUSTOM_FORMULA",
-                              "values": [{"userEnteredValue":
-                                  f'=AND(NOT(ISERROR(FIND("%",L{D_START})),ISERROR(FIND("-",L{D_START}))))'}]},
-                "format": {"backgroundColor": POS_BG,
-                           "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
-            },
-        }}},
-        # Last Disc. Date (col J, index 9): date format
-        {"repeatCell": {
-            "range": rng(D_START, last, 9, 10),
-            "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
-            "fields": "userEnteredFormat.numberFormat",
-        }},
-        # Status column: dropdown
-        {"setDataValidation": {
-            "range": rng(D_START, last, 12, 13),
-            "rule": {
-                "condition": {
-                    "type": "ONE_OF_LIST",
-                    "values": [{"userEnteredValue": v}
-                               for v in ["Watching", "Tracking", "Interested", "Pass", "Portfolio"]],
+            *[{"updateDimensionProperties": {
+                "range": {"sheetId": sid, "dimension": "COLUMNS",
+                          "startIndex": i, "endIndex": i + 1},
+                "properties": {"pixelSize": w}, "fields": "pixelSize",
+            }} for i, w in enumerate(COL_W)],
+            {"updateDimensionProperties": {
+                "range": {"sheetId": sid, "dimension": "ROWS",
+                          "startIndex": 2, "endIndex": 3},
+                "properties": {"pixelSize": 40}, "fields": "pixelSize",
+            }},
+            {"updateBorders": {
+                "range": rng(3, 3, 0, 14),
+                "bottom": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": BDR_MED}},
+            }},
+            {"addConditionalFormatRule": {"index": 0, "rule": {
+                "ranges": [rng(D_START, last, 0, 14)],
+                "booleanRule": {
+                    "condition": {"type": "CUSTOM_FORMULA",
+                                  "values": [{"userEnteredValue": "=MOD(ROW(),2)=0"}]},
+                    "format": {"backgroundColor": PALE},
                 },
-                "showCustomUi": True,
-                "strict": False,
-            },
-        }},
-    ]
-    sh.batch_update({"requests": requests})
-    print("Watchlist: formatting applied")
-    apply_watchlist_format(ws)
+            }}},
+            {"addConditionalFormatRule": {"index": 1, "rule": {
+                "ranges": [rng(D_START, last, 11, 12)],
+                "booleanRule": {
+                    "condition": {"type": "TEXT_CONTAINS",
+                                  "values": [{"userEnteredValue": "-"}]},
+                    "format": {"backgroundColor": NEG_BG,
+                               "textFormat": {"foregroundColor": NEG_TEXT, "bold": True}},
+                },
+            }}},
+            {"addConditionalFormatRule": {"index": 2, "rule": {
+                "ranges": [rng(D_START, last, 11, 12)],
+                "booleanRule": {
+                    "condition": {"type": "CUSTOM_FORMULA",
+                                  "values": [{"userEnteredValue":
+                                      f'=AND(NOT(ISERROR(FIND("%",L{D_START}))),ISERROR(FIND("-",L{D_START})))'}]},
+                    "format": {"backgroundColor": POS_BG,
+                               "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
+                },
+            }}},
+            {"repeatCell": {
+                "range": rng(D_START, last, 9, 10),
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }},
+            {"setDataValidation": {
+                "range": rng(D_START, last, 12, 13),
+                "rule": {
+                    "condition": {
+                        "type": "ONE_OF_LIST",
+                        "values": [{"userEnteredValue": v}
+                                   for v in ["Watching", "Tracking", "Interested", "Pass", "Portfolio"]],
+                    },
+                    "showCustomUi": True, "strict": False,
+                },
+            }},
+        ]})
+        print("Watchlist: formatting applied")
 
     # ── Position after SI_Portfolio ────────────────────────────────────────
     meta   = sh.fetch_sheet_metadata()
