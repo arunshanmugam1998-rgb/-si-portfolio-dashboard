@@ -923,43 +923,55 @@ def create_watchlist():
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title="Watchlist", rows=NROWS + 10, cols=14)
 
-    sid  = ws.id
-    last = NROWS + 1   # last pre-populated row number
+    sid      = ws.id
+    D_START  = 4               # data rows start here (rows 1-2 blank, row 3 = headers)
+    last     = D_START + NROWS - 1   # last pre-populated row number (= 103)
 
-    # ── Headers ────────────────────────────────────────────────────────────
+    # ── Clear + unmerge entire sheet before rewrite ────────────────────────
+    ws.clear()
+    sh.batch_update({"requests": [{"unmergeCells": {
+        "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 5,
+                  "startColumnIndex": 0, "endColumnIndex": 14},
+    }}]})
+
+    # ── Reset rows 1-2 to plain white (clear() doesn't remove cell format) ─
+    ws.format("A1:N2", {
+        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+        "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}},
+    })
+
+    # ── Headers in row 3; rows 1-2 blank ───────────────────────────────────
     HEADERS = [
         "#", "NSE Ticker", "Company", "Sector",
         "CMP (₹)", "52W High (₹)", "52W Low (₹)",
         "Mkt Cap (₹ Cr)", "P/E", "Last Disc. Date", "Last Disc. Price (₹)", "Chg since LDP %",
         "Status", "Notes",
     ]
-    ws.update(range_name="A1:N1", values=[HEADERS], value_input_option="RAW")
+    ws.update(range_name="A3:N3", values=[HEADERS], value_input_option="RAW")
 
-    # ── Formula columns ────────────────────────────────────────────────────
-    # Formula cols: A C E F G H I K L.  Manual cols: B D J M N.
-    rows = range(2, last + 1)
+    # ── Formula columns (rows 4 to last) ───────────────────────────────────
+    rows = range(D_START, last + 1)
 
     def fcol(col_range, fn):
         ws.update(range_name=col_range, values=[[fn(r)] for r in rows], value_input_option="USER_ENTERED")
 
     gf = lambda attr, r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"{attr}"),"—"))'
 
-    fcol(f"A2:A{last}", lambda r: f'=IF(B{r}="","",ROW()-1)')
-    fcol(f"C2:C{last}", lambda r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"name"),"—"))')
-    fcol(f"E2:E{last}", lambda r: gf("price",  r))
-    fcol(f"F2:F{last}", lambda r: gf("high52", r))
-    fcol(f"G2:G{last}", lambda r: gf("low52",  r))
-    fcol(f"H2:H{last}", lambda r:
+    fcol(f"A{D_START}:A{last}", lambda r: f'=IF(B{r}="","",ROW()-3)')
+    fcol(f"C{D_START}:C{last}", lambda r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"name"),"—"))')
+    fcol(f"E{D_START}:E{last}", lambda r: gf("price",  r))
+    fcol(f"F{D_START}:F{last}", lambda r: gf("high52", r))
+    fcol(f"G{D_START}:G{last}", lambda r: gf("low52",  r))
+    fcol(f"H{D_START}:H{last}", lambda r:
          f'=IF(B{r}="","",IFERROR(TEXT(GOOGLEFINANCE("NSE:"&B{r},"marketcap")/10000000,"#,##0"),"—"))')
-    fcol(f"I2:I{last}", lambda r: gf("pe", r))
-    # K: fetch closing price on Last Disc. Date (col J), or next available trading day
-    fcol(f"K2:K{last}", lambda r:
+    fcol(f"I{D_START}:I{last}", lambda r: gf("pe", r))
+    fcol(f"K{D_START}:K{last}", lambda r:
          f'=IF(OR(B{r}="",J{r}=""),"",IFERROR(INDEX(GOOGLEFINANCE("NSE:"&B{r},"close",J{r},J{r}+7),2,2),"—"))')
-    fcol(f"L2:L{last}", lambda r:
+    fcol(f"L{D_START}:L{last}", lambda r:
          f'=IF(OR(B{r}="",NOT(ISNUMBER(K{r})),K{r}=0,NOT(ISNUMBER(E{r}))),"",TEXT((E{r}/K{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
 
-    ws.freeze(rows=1)
-    print(f"Watchlist: headers + formulas written ({NROWS} rows)")
+    ws.freeze(rows=3)
+    print(f"Watchlist: headers (row 3) + formulas written ({NROWS} rows from row {D_START})")
 
     # ── Formatting ─────────────────────────────────────────────────────────
     NAVY     = {"red": 0.122, "green": 0.235, "blue": 0.392}
@@ -971,17 +983,19 @@ def create_watchlist():
     NEG_TEXT = {"red": 0.612, "green": 0.0,   "blue": 0.004}
     BDR_MED  = {"red": 0.122, "green": 0.235, "blue": 0.392}
 
-    ws.format("A1:N1", {
+    # Header row: navy background + white bold text
+    ws.format("A3:N3", {
         "backgroundColor": NAVY,
         "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": WHITE},
         "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
         "wrapStrategy": "WRAP",
     })
-    ws.format(f"A2:N{last}", {"textFormat": {"fontSize": 10}, "verticalAlignment": "MIDDLE"})
-    ws.format(f"A2:B{last}", {"horizontalAlignment": "CENTER"})
-    ws.format(f"C2:D{last}", {"horizontalAlignment": "LEFT"})
-    ws.format(f"E2:L{last}", {"horizontalAlignment": "RIGHT"})
-    ws.format(f"M2:N{last}", {"horizontalAlignment": "LEFT"})
+    # Data rows alignment
+    ws.format(f"A{D_START}:N{last}", {"textFormat": {"fontSize": 10}, "verticalAlignment": "MIDDLE"})
+    ws.format(f"A{D_START}:B{last}", {"horizontalAlignment": "CENTER"})
+    ws.format(f"C{D_START}:D{last}", {"horizontalAlignment": "LEFT"})
+    ws.format(f"E{D_START}:L{last}", {"horizontalAlignment": "RIGHT"})
+    ws.format(f"M{D_START}:N{last}", {"horizontalAlignment": "LEFT"})
 
     def rng(r0, r1, c0, c1):
         return {"sheetId": sid,
@@ -1012,20 +1026,20 @@ def create_watchlist():
     requests = [
         # Column widths (only on first run; subsequent runs restore saved format)
         *col_w_requests,
-        # Header row height
+        # Header row (row 3) height
         {"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "ROWS",
-                      "startIndex": 0, "endIndex": 1},
+                      "startIndex": 2, "endIndex": 3},
             "properties": {"pixelSize": 40}, "fields": "pixelSize",
         }},
         # Header bottom border
         {"updateBorders": {
-            "range": rng(1, 1, 0, 14),
+            "range": rng(3, 3, 0, 14),
             "bottom": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": BDR_MED}},
         }},
-        # Alternating row shading
+        # Alternating row shading on data rows
         {"addConditionalFormatRule": {"index": 0, "rule": {
-            "ranges": [rng(2, last, 0, 14)],
+            "ranges": [rng(D_START, last, 0, 14)],
             "booleanRule": {
                 "condition": {"type": "CUSTOM_FORMULA",
                               "values": [{"userEnteredValue": "=MOD(ROW(),2)=0"}]},
@@ -1034,7 +1048,7 @@ def create_watchlist():
         }}},
         # Chg since LDP: negative → red
         {"addConditionalFormatRule": {"index": 1, "rule": {
-            "ranges": [rng(2, last, 11, 12)],
+            "ranges": [rng(D_START, last, 11, 12)],
             "booleanRule": {
                 "condition": {"type": "TEXT_CONTAINS",
                               "values": [{"userEnteredValue": "-"}]},
@@ -1044,24 +1058,24 @@ def create_watchlist():
         }}},
         # Chg since LDP: positive → green
         {"addConditionalFormatRule": {"index": 2, "rule": {
-            "ranges": [rng(2, last, 11, 12)],
+            "ranges": [rng(D_START, last, 11, 12)],
             "booleanRule": {
                 "condition": {"type": "CUSTOM_FORMULA",
                               "values": [{"userEnteredValue":
-                                  '=AND(NOT(ISERROR(FIND("%",L2))),ISERROR(FIND("-",L2)))'}]},
+                                  f'=AND(NOT(ISERROR(FIND("%",L{D_START})),ISERROR(FIND("-",L{D_START}))))'}]},
                 "format": {"backgroundColor": POS_BG,
                            "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
             },
         }}},
         # Last Disc. Date (col J, index 9): date format
         {"repeatCell": {
-            "range": rng(2, last, 9, 10),
+            "range": rng(D_START, last, 9, 10),
             "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
             "fields": "userEnteredFormat.numberFormat",
         }},
         # Status column: dropdown
         {"setDataValidation": {
-            "range": rng(2, last, 12, 13),
+            "range": rng(D_START, last, 12, 13),
             "rule": {
                 "condition": {
                     "type": "ONE_OF_LIST",
