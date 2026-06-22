@@ -972,6 +972,46 @@ def create_watchlist():
         "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
         "fields": "userEnteredFormat.numberFormat",
     }}]})
+
+    # ── Col L conditional format (red/green) — always applied, no other rules touched
+    POS_BG   = {"red": 0.902, "green": 0.957, "blue": 0.914}
+    NEG_BG   = {"red": 0.992, "green": 0.887, "blue": 0.882}
+    POS_TEXT = {"red": 0.118, "green": 0.408, "blue": 0.137}
+    NEG_TEXT = {"red": 0.612, "green": 0.0,   "blue": 0.004}
+    L_RANGE  = {"sheetId": sid, "startRowIndex": D_START - 1, "endRowIndex": last,
+                "startColumnIndex": 11, "endColumnIndex": 12}
+
+    meta_now   = sh.fetch_sheet_metadata()
+    sheet_meta = next((s for s in meta_now.get("sheets", [])
+                       if s["properties"]["sheetId"] == sid), {})
+    existing   = sheet_meta.get("conditionalFormats", [])
+    # Delete only rules that cover col L (startColumnIndex == 11)
+    l_rule_idxs = [i for i, r in enumerate(existing)
+                   if any(rng.get("startColumnIndex") == 11
+                          for rng in r.get("ranges", []))]
+    delete_reqs = [{"deleteConditionalFormatRule": {"index": i, "sheetId": sid}}
+                   for i in sorted(l_rule_idxs, reverse=True)]
+    add_reqs = [
+        {"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [L_RANGE],
+            "booleanRule": {
+                "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "-"}]},
+                "format": {"backgroundColor": NEG_BG,
+                           "textFormat": {"foregroundColor": NEG_TEXT, "bold": True}},
+            },
+        }}},
+        {"addConditionalFormatRule": {"index": 1, "rule": {
+            "ranges": [L_RANGE],
+            "booleanRule": {
+                "condition": {"type": "CUSTOM_FORMULA",
+                              "values": [{"userEnteredValue":
+                                  f'=AND(NOT(ISERROR(FIND("%",L{D_START}))),ISERROR(FIND("-",L{D_START})))'}]},
+                "format": {"backgroundColor": POS_BG,
+                           "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
+            },
+        }}},
+    ]
+    sh.batch_update({"requests": delete_reqs + add_reqs})
     print(f"Watchlist: headers + formulas written ({NROWS} rows)")
 
     # ── Formatting — only on first creation or --format-watchlist ──────────
