@@ -26,6 +26,9 @@ sh     = gc.open_by_key("14zSRp_Q8bOU6w9Z3gz6csV9FFNTC37jitur7I_Egeqg")
 # Populate by running:  python update_si_sheet.py --save-format
 FORMAT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "si_portfolio_format.json")
+# Watchlist column format — run:  python update_si_sheet.py --save-watchlist-format
+WATCHLIST_FORMAT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "watchlist_format.json")
 
 # ── All Trades column references ──────────────────────────────────────────────
 # Sheet layout: A=Financial Year  B=Trade Date(text)  E=Security Name
@@ -845,6 +848,57 @@ def apply_column_format(ws):
         print(f"Column format restored ({len(requests)} columns).")
 
 
+def save_watchlist_format():
+    """Save current Watchlist column widths to watchlist_format.json."""
+    ws   = sh.worksheet("Watchlist")
+    sid  = ws.id
+    meta = sh.fetch_sheet_metadata()
+    sheet_meta = next((s for s in meta.get("sheets", [])
+                       if s["properties"]["sheetId"] == sid), {})
+    col_meta = sheet_meta.get("data", [{}])[0].get("columnMetadata", [])
+    fmt = {}
+    for i, cm in enumerate(col_meta):
+        entry = {}
+        if cm.get("pixelSize"):
+            entry["width"] = cm["pixelSize"]
+        if cm.get("hiddenByUser"):
+            entry["hidden"] = True
+        if entry:
+            fmt[str(i)] = entry
+    with open(WATCHLIST_FORMAT_FILE, "w", encoding="utf-8") as f:
+        json.dump(fmt, f, indent=2)
+    print(f"Saved Watchlist format for {len(fmt)} columns → {WATCHLIST_FORMAT_FILE}")
+
+
+def apply_watchlist_format(ws):
+    """Restore Watchlist column widths from watchlist_format.json. No-op if file absent."""
+    if not os.path.exists(WATCHLIST_FORMAT_FILE):
+        return
+    with open(WATCHLIST_FORMAT_FILE, encoding="utf-8") as f:
+        fmt = json.load(f)
+    if not fmt:
+        return
+    sid      = ws.id
+    requests = []
+    for col_str, props in fmt.items():
+        col_idx   = int(col_str)
+        col_props = {}
+        fields    = []
+        if "width" in props:
+            col_props["pixelSize"] = props["width"]
+            fields.append("pixelSize")
+        if col_props:
+            requests.append({"updateDimensionProperties": {
+                "range": {"sheetId": sid, "dimension": "COLUMNS",
+                          "startIndex": col_idx, "endIndex": col_idx + 1},
+                "properties": col_props,
+                "fields": ",".join(fields),
+            }})
+    if requests:
+        sh.batch_update({"requests": requests})
+        print(f"Watchlist: column format restored ({len(requests)} columns).")
+
+
 # ── Watchlist tab ─────────────────────────────────────────────────────────────
 def create_watchlist():
     """
@@ -946,13 +1000,18 @@ def create_watchlist():
         ]})
 
     COL_W = [35, 90, 220, 120, 85, 85, 80, 110, 65, 120, 120, 120, 100, 250]
-    requests = [
-        # Column widths
-        *[{"updateDimensionProperties": {
+    col_w_requests = (
+        []  # skip: saved format will be restored after batch_update
+        if os.path.exists(WATCHLIST_FORMAT_FILE) else
+        [{"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "COLUMNS",
                       "startIndex": i, "endIndex": i + 1},
             "properties": {"pixelSize": w}, "fields": "pixelSize",
-        }} for i, w in enumerate(COL_W)],
+        }} for i, w in enumerate(COL_W)]
+    )
+    requests = [
+        # Column widths (only on first run; subsequent runs restore saved format)
+        *col_w_requests,
         # Header row height
         {"updateDimensionProperties": {
             "range": {"sheetId": sid, "dimension": "ROWS",
@@ -1016,6 +1075,7 @@ def create_watchlist():
     ]
     sh.batch_update({"requests": requests})
     print("Watchlist: formatting applied")
+    apply_watchlist_format(ws)
 
     # ── Position after SI_Portfolio ────────────────────────────────────────
     meta   = sh.fetch_sheet_metadata()
@@ -1035,6 +1095,11 @@ if __name__ == "__main__":
     if "--save-format" in sys.argv:
         print("Saving current SI_Portfolio column format...")
         save_column_format()
+        sys.exit(0)
+
+    if "--save-watchlist-format" in sys.argv:
+        print("Saving current Watchlist column format...")
+        save_watchlist_format()
         sys.exit(0)
 
     print("Fixing All Trades: converting text numbers to numeric values...")
