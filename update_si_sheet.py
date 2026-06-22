@@ -845,6 +845,183 @@ def apply_column_format(ws):
         print(f"Column format restored ({len(requests)} columns).")
 
 
+# ── Watchlist tab ─────────────────────────────────────────────────────────────
+def create_watchlist():
+    """
+    Creates or refreshes the Watchlist tab, positioned after SI_Portfolio.
+
+    User workflow: enter NSE Ticker in col B → all formula columns auto-fill.
+    Manual columns (B Ticker, D Sector, K Last Disc. Price, M Status, N Notes)
+    are never overwritten — safe to re-run at any time.
+
+    Columns:
+      A #  B Ticker  C Company  D Sector
+      E CMP  F 52W High  G 52W Low  H From High %
+      I Mkt Cap (₹ Cr)  J P/E  K Last Disc. Price (₹)  L Chg since LDP %
+      M Status  N Notes
+    """
+    NROWS = 100
+
+    # ── Get or create sheet ────────────────────────────────────────────────
+    try:
+        ws = sh.worksheet("Watchlist")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Watchlist", rows=NROWS + 10, cols=14)
+
+    sid  = ws.id
+    last = NROWS + 1   # last pre-populated row number
+
+    # ── Headers ────────────────────────────────────────────────────────────
+    HEADERS = [
+        "#", "NSE Ticker", "Company", "Sector",
+        "CMP (₹)", "52W High (₹)", "52W Low (₹)", "From High %",
+        "Mkt Cap (₹ Cr)", "P/E", "Last Disc. Price (₹)", "Chg since LDP %",
+        "Status", "Notes",
+    ]
+    ws.update("A1:N1", [HEADERS], value_input_option="RAW")
+
+    # ── Formula columns ────────────────────────────────────────────────────
+    # Only cols A C E F G H I J L are formula-driven. B D K M N = manual input.
+    rows = range(2, last + 1)
+
+    def fcol(rng, fn):
+        ws.update(rng, [[fn(r)] for r in rows], value_input_option="USER_ENTERED")
+
+    gf = lambda attr, r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"{attr}"),"—"))'
+
+    fcol(f"A2:A{last}", lambda r: f'=IF(B{r}="","",ROW()-1)')
+    fcol(f"C2:C{last}", lambda r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"name"),"—"))')
+    fcol(f"E2:E{last}", lambda r: gf("price",  r))
+    fcol(f"F2:F{last}", lambda r: gf("high52", r))
+    fcol(f"G2:G{last}", lambda r: gf("low52",  r))
+    fcol(f"H2:H{last}", lambda r:
+         f'=IF(OR(B{r}="",NOT(ISNUMBER(E{r})),NOT(ISNUMBER(F{r})),F{r}=0),"",TEXT((E{r}/F{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
+    fcol(f"I2:I{last}", lambda r:
+         f'=IF(B{r}="","",IFERROR(TEXT(GOOGLEFINANCE("NSE:"&B{r},"marketcap")/10000000,"#,##0"),"—"))')
+    fcol(f"J2:J{last}", lambda r: gf("pe", r))
+    fcol(f"L2:L{last}", lambda r:
+         f'=IF(OR(B{r}="",NOT(ISNUMBER(K{r})),K{r}=0,NOT(ISNUMBER(E{r}))),"",TEXT((E{r}/K{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
+
+    ws.freeze(rows=1)
+    print(f"Watchlist: headers + formulas written ({NROWS} rows)")
+
+    # ── Formatting ─────────────────────────────────────────────────────────
+    NAVY     = {"red": 0.122, "green": 0.235, "blue": 0.392}
+    WHITE    = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+    PALE     = {"red": 0.933, "green": 0.953, "blue": 0.980}
+    POS_BG   = {"red": 0.902, "green": 0.957, "blue": 0.914}
+    NEG_BG   = {"red": 0.992, "green": 0.887, "blue": 0.882}
+    POS_TEXT = {"red": 0.118, "green": 0.408, "blue": 0.137}
+    NEG_TEXT = {"red": 0.612, "green": 0.0,   "blue": 0.004}
+    BDR_MED  = {"red": 0.122, "green": 0.235, "blue": 0.392}
+
+    ws.format("A1:N1", {
+        "backgroundColor": NAVY,
+        "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": WHITE},
+        "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+        "wrapStrategy": "WRAP",
+    })
+    ws.format(f"A2:N{last}", {"textFormat": {"fontSize": 10}, "verticalAlignment": "MIDDLE"})
+    ws.format(f"A2:B{last}", {"horizontalAlignment": "CENTER"})
+    ws.format(f"C2:D{last}", {"horizontalAlignment": "LEFT"})
+    ws.format(f"E2:L{last}", {"horizontalAlignment": "RIGHT"})
+    ws.format(f"M2:N{last}", {"horizontalAlignment": "LEFT"})
+
+    def rng(r0, r1, c0, c1):
+        return {"sheetId": sid,
+                "startRowIndex": r0 - 1, "endRowIndex": r1,
+                "startColumnIndex": c0,  "endColumnIndex": c1}
+
+    # Clear existing conditional format rules before adding new ones
+    meta       = sh.fetch_sheet_metadata()
+    sheet_meta = next((s for s in meta.get("sheets", [])
+                       if s["properties"]["sheetId"] == sid), {})
+    n_rules = len(sheet_meta.get("conditionalFormats", []))
+    if n_rules:
+        sh.batch_update({"requests": [
+            {"deleteConditionalFormatRule": {"index": 0, "sheetId": sid}}
+            for _ in range(n_rules)
+        ]})
+
+    COL_W = [35, 90, 220, 120, 85, 85, 80, 95, 110, 65, 120, 120, 100, 250]
+    requests = [
+        # Column widths
+        *[{"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize",
+        }} for i, w in enumerate(COL_W)],
+        # Header row height
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "ROWS",
+                      "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 40}, "fields": "pixelSize",
+        }},
+        # Header bottom border
+        {"updateBorders": {
+            "range": rng(1, 1, 0, 14),
+            "bottom": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": BDR_MED}},
+        }},
+        # Alternating row shading
+        {"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [rng(2, last, 0, 14)],
+            "booleanRule": {
+                "condition": {"type": "CUSTOM_FORMULA",
+                              "values": [{"userEnteredValue": "=MOD(ROW(),2)=0"}]},
+                "format": {"backgroundColor": PALE},
+            },
+        }}},
+        # Chg since LDP: negative → red
+        {"addConditionalFormatRule": {"index": 1, "rule": {
+            "ranges": [rng(2, last, 11, 12)],
+            "booleanRule": {
+                "condition": {"type": "TEXT_CONTAINS",
+                              "values": [{"userEnteredValue": "-"}]},
+                "format": {"backgroundColor": NEG_BG,
+                           "textFormat": {"foregroundColor": NEG_TEXT, "bold": True}},
+            },
+        }}},
+        # Chg since LDP: positive → green
+        {"addConditionalFormatRule": {"index": 2, "rule": {
+            "ranges": [rng(2, last, 11, 12)],
+            "booleanRule": {
+                "condition": {"type": "CUSTOM_FORMULA",
+                              "values": [{"userEnteredValue":
+                                  '=AND(NOT(ISERROR(FIND("%",L2))),ISERROR(FIND("-",L2)))'}]},
+                "format": {"backgroundColor": POS_BG,
+                           "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
+            },
+        }}},
+        # Status column: dropdown
+        {"setDataValidation": {
+            "range": rng(2, last, 12, 13),
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [{"userEnteredValue": v}
+                               for v in ["Watching", "Tracking", "Interested", "Pass", "Portfolio"]],
+                },
+                "showCustomUi": True,
+                "strict": False,
+            },
+        }},
+    ]
+    sh.batch_update({"requests": requests})
+    print("Watchlist: formatting applied")
+
+    # ── Position after SI_Portfolio ────────────────────────────────────────
+    meta   = sh.fetch_sheet_metadata()
+    sheets = meta.get("sheets", [])
+    si_idx = next((s["properties"]["index"] for s in sheets
+                   if s["properties"]["title"] == "SI_Portfolio"), None)
+    if si_idx is not None:
+        sh.batch_update({"requests": [{"updateSheetProperties": {
+            "properties": {"sheetId": sid, "index": si_idx + 1},
+            "fields": "index",
+        }}]})
+        print("Watchlist: positioned after SI_Portfolio")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if "--save-format" in sys.argv:
@@ -866,6 +1043,9 @@ if __name__ == "__main__":
 
     print("\nRestoring saved column format...")
     apply_column_format(ws_port)
+
+    print("\nCreating/refreshing Watchlist...")
+    create_watchlist()
 
     print("\nDone. SI_Portfolio now updates automatically when All Trades changes.")
     print("Re-run this script only when: adding a new company, or after a demerger.")
