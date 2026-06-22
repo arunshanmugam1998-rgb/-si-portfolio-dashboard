@@ -963,6 +963,15 @@ def create_watchlist():
          f'=IF(OR(B{r}="",NOT(ISNUMBER(K{r})),K{r}=0,NOT(ISNUMBER(E{r}))),"",TEXT((E{r}/K{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
 
     ws.freeze(rows=3)
+
+    # ── Date number format on col J — always applied (functional, not cosmetic)
+    sh.batch_update({"requests": [{"repeatCell": {
+        "range": {"sheetId": sid,
+                  "startRowIndex": D_START - 1, "endRowIndex": last,
+                  "startColumnIndex": 9, "endColumnIndex": 10},
+        "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }}]})
     print(f"Watchlist: headers + formulas written ({NROWS} rows)")
 
     # ── Formatting — only on first creation or --format-watchlist ──────────
