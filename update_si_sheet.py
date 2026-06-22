@@ -169,12 +169,12 @@ def setup_all_trades_helper():
     ws  = sh.worksheet("All Trades")
     hdr = ws.row_values(1)
     if "Date Serial" not in hdr:
-        ws.update("S1", [["Date Serial"]], value_input_option="RAW")
+        ws.update(range_name="S1", values=[["Date Serial"]], value_input_option="RAW")
         ws.format("S1", {"textFormat": {"bold": True}})
     # dd/mm/yyyy: LEFT(B,2)=day · MID(B,4,2)=month · MID(B,7,4)=year
     formula = ('=ARRAYFORMULA(IF(B2:B="","",'
                'DATE(VALUE(MID(B2:B,7,4)),VALUE(MID(B2:B,4,2)),VALUE(LEFT(B2:B,2)))))')
-    ws.update("S2", [[formula]], value_input_option="USER_ENTERED")
+    ws.update(range_name="S2", values=[[formula]], value_input_option="USER_ENTERED")
     print("All Trades: Date Serial formula written at column S")
 
 
@@ -933,14 +933,14 @@ def create_watchlist():
         "Mkt Cap (₹ Cr)", "P/E", "Last Disc. Date", "Last Disc. Price (₹)", "Chg since LDP %",
         "Status", "Notes",
     ]
-    ws.update("A1:N1", [HEADERS], value_input_option="RAW")
+    ws.update(range_name="A1:N1", values=[HEADERS], value_input_option="RAW")
 
     # ── Formula columns ────────────────────────────────────────────────────
     # Formula cols: A C E F G H I K L.  Manual cols: B D J M N.
     rows = range(2, last + 1)
 
     def fcol(col_range, fn):
-        ws.update(col_range, [[fn(r)] for r in rows], value_input_option="USER_ENTERED")
+        ws.update(range_name=col_range, values=[[fn(r)] for r in rows], value_input_option="USER_ENTERED")
 
     gf = lambda attr, r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"{attr}"),"—"))'
 
