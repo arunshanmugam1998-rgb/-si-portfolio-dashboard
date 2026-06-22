@@ -850,14 +850,15 @@ def create_watchlist():
     """
     Creates or refreshes the Watchlist tab, positioned after SI_Portfolio.
 
-    User workflow: enter NSE Ticker in col B → all formula columns auto-fill.
-    Manual columns (B Ticker, D Sector, K Last Disc. Price, M Status, N Notes)
-    are never overwritten — safe to re-run at any time.
+    User workflow: enter NSE Ticker (col B) + Last Disc. Date (col J) →
+    all formula columns auto-fill. Manual cols: B Ticker, D Sector,
+    J Last Disc. Date, M Status, N Notes. Safe to re-run at any time.
 
     Columns:
       A #  B Ticker  C Company  D Sector
-      E CMP  F 52W High  G 52W Low  H From High %
-      I Mkt Cap (₹ Cr)  J P/E  K Last Disc. Price (₹)  L Chg since LDP %
+      E CMP  F 52W High  G 52W Low
+      H Mkt Cap (₹ Cr)  I P/E
+      J Last Disc. Date  K Last Disc. Price (₹)  L Chg since LDP %
       M Status  N Notes
     """
     NROWS = 100
@@ -874,18 +875,18 @@ def create_watchlist():
     # ── Headers ────────────────────────────────────────────────────────────
     HEADERS = [
         "#", "NSE Ticker", "Company", "Sector",
-        "CMP (₹)", "52W High (₹)", "52W Low (₹)", "From High %",
-        "Mkt Cap (₹ Cr)", "P/E", "Last Disc. Price (₹)", "Chg since LDP %",
+        "CMP (₹)", "52W High (₹)", "52W Low (₹)",
+        "Mkt Cap (₹ Cr)", "P/E", "Last Disc. Date", "Last Disc. Price (₹)", "Chg since LDP %",
         "Status", "Notes",
     ]
     ws.update("A1:N1", [HEADERS], value_input_option="RAW")
 
     # ── Formula columns ────────────────────────────────────────────────────
-    # Only cols A C E F G H I J L are formula-driven. B D K M N = manual input.
+    # Formula cols: A C E F G H I K L.  Manual cols: B D J M N.
     rows = range(2, last + 1)
 
-    def fcol(rng, fn):
-        ws.update(rng, [[fn(r)] for r in rows], value_input_option="USER_ENTERED")
+    def fcol(col_range, fn):
+        ws.update(col_range, [[fn(r)] for r in rows], value_input_option="USER_ENTERED")
 
     gf = lambda attr, r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"{attr}"),"—"))'
 
@@ -895,10 +896,11 @@ def create_watchlist():
     fcol(f"F2:F{last}", lambda r: gf("high52", r))
     fcol(f"G2:G{last}", lambda r: gf("low52",  r))
     fcol(f"H2:H{last}", lambda r:
-         f'=IF(OR(B{r}="",NOT(ISNUMBER(E{r})),NOT(ISNUMBER(F{r})),F{r}=0),"",TEXT((E{r}/F{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
-    fcol(f"I2:I{last}", lambda r:
          f'=IF(B{r}="","",IFERROR(TEXT(GOOGLEFINANCE("NSE:"&B{r},"marketcap")/10000000,"#,##0"),"—"))')
-    fcol(f"J2:J{last}", lambda r: gf("pe", r))
+    fcol(f"I2:I{last}", lambda r: gf("pe", r))
+    # K: fetch closing price on Last Disc. Date (col J), or next available trading day
+    fcol(f"K2:K{last}", lambda r:
+         f'=IF(OR(B{r}="",J{r}=""),"",IFERROR(INDEX(GOOGLEFINANCE("NSE:"&B{r},"close",J{r},J{r}+7),2,2),"—"))')
     fcol(f"L2:L{last}", lambda r:
          f'=IF(OR(B{r}="",NOT(ISNUMBER(K{r})),K{r}=0,NOT(ISNUMBER(E{r}))),"",TEXT((E{r}/K{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
 
@@ -943,7 +945,7 @@ def create_watchlist():
             for _ in range(n_rules)
         ]})
 
-    COL_W = [35, 90, 220, 120, 85, 85, 80, 95, 110, 65, 120, 120, 100, 250]
+    COL_W = [35, 90, 220, 120, 85, 85, 80, 110, 65, 120, 120, 120, 100, 250]
     requests = [
         # Column widths
         *[{"updateDimensionProperties": {
@@ -992,6 +994,12 @@ def create_watchlist():
                            "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
             },
         }}},
+        # Last Disc. Date (col J, index 9): date format
+        {"repeatCell": {
+            "range": rng(2, last, 9, 10),
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }},
         # Status column: dropdown
         {"setDataValidation": {
             "range": rng(2, last, 12, 13),
