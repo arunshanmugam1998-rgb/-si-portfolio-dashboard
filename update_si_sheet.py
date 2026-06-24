@@ -1248,6 +1248,7 @@ def _norm_co(name):
     if not name:
         return ""
     n = name.lower()
+    n = re.sub(r'\(india\)', '', n)                              # strip "(India)"
     n = re.sub(r'\b(ltd|limited|pvt|co|inc|corp|plc|llp)\b\.?', '', n)
     n = re.sub(r'[^a-z0-9 ]', ' ', n)
     return re.sub(r'\s+', ' ', n).strip()
