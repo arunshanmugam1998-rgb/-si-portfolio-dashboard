@@ -8,8 +8,11 @@ Day-to-day Buy / Sell / Bonus / IPO Allotment entries in All Trades auto-update 
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
+import difflib
 import json
 import os
+import re
+import requests
 import time
 import yfinance as yf
 from datetime import date, datetime
@@ -1159,53 +1162,143 @@ def create_watchlist():
         print("Watchlist: positioned after SI_Portfolio")
 
 
-# ── Watchlist sector population ───────────────────────────────────────────────
+# ── Watchlist sector population (TheWrap Market Map) ──────────────────────────
+_TW_API  = ("https://wabi-india-central-a-primary-api.analysis.windows.net"
+            "/public/reports/querydata?synchronous=true")
+_TW_KEY  = "20d70a38-025d-4a7c-8bc3-778c7823b516"
+_TW_BODY = {
+    "version": "1.0.0",
+    "queries": [{
+        "Query": {
+            "Commands": [{
+                "SemanticQueryDataShapeCommand": {
+                    "Query": {
+                        "Version": 2,
+                        "From": [{"Name": "m", "Entity": "MarketMap", "Type": 0}],
+                        "Select": [
+                            {"Column": {"Expression": {"SourceRef": {"Source": "m"}},
+                                        "Property": "CompanyName"}, "Name": "CompanyName"},
+                            {"Column": {"Expression": {"SourceRef": {"Source": "m"}},
+                                        "Property": "Index"}, "Name": "SubIndustry"},
+                            {"Column": {"Expression": {"SourceRef": {"Source": "m"}},
+                                        "Property": "Industry"}, "Name": "Industry"},
+                        ],
+                    },
+                    "Binding": {
+                        "Primary": {"Groupings": [{"Projections": [0, 1, 2]}]},
+                        "DataReduction": {"DataVolume": 4, "Primary": {"Top": {"Count": 10000}}},
+                        "Version": 1,
+                    },
+                }
+            }]
+        },
+        "QueryId": "",
+        "ApplicationContext": {
+            "DatasetId": "3d5680cd-652b-4fbd-b7ff-34f7b6fb2f8e",
+            "Sources": [{"ReportId": "53d20f7b-d345-4462-9c59-3e44b64c4ad8"}],
+        },
+    }],
+    "cancelQueries": [],
+    "modelId": 6625446,
+}
+
+
+def _fetch_thewrap_market_map():
+    """Call TheWrap Power BI public API and return list of {CompanyName, SubIndustry, Industry}."""
+    resp = requests.post(
+        _TW_API,
+        headers={"Content-Type": "application/json", "x-powerbi-resourcekey": _TW_KEY},
+        json=_TW_BODY,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    DS0  = data["results"][0]["result"]["data"]["dsr"]["DS"][0]
+    DM0  = DS0["PH"][0]["DM0"]
+    VD   = DS0["ValueDicts"]      # {"D0": [...], "D1": [...], "D2": [...]}
+
+    NCOLS = 3
+    rows  = []
+    prev  = [None] * NCOLS
+
+    for entry in DM0:
+        R  = entry.get("R", 0)
+        C  = entry.get("C", [])
+        ci = 0
+        cur = []
+        for col in range(NCOLS):
+            if R & (1 << col):
+                cur.append(prev[col])
+            else:
+                idx = C[ci]; ci += 1
+                d   = VD.get(f"D{col}", [])
+                if isinstance(d, list) and isinstance(idx, int) and 0 <= idx < len(d):
+                    cur.append(d[idx])
+                else:
+                    cur.append(idx)   # inline value (not a dict index)
+        prev = cur
+        rows.append({"CompanyName": cur[0], "SubIndustry": cur[1], "Industry": cur[2]})
+
+    return rows
+
+
+def _norm_co(name):
+    """Normalise company name for fuzzy matching."""
+    if not name:
+        return ""
+    n = name.lower()
+    n = re.sub(r'\b(ltd|limited|pvt|co|inc|corp|plc|llp)\b\.?', '', n)
+    n = re.sub(r'[^a-z0-9 ]', ' ', n)
+    return re.sub(r'\s+', ' ', n).strip()
+
+
 def populate_watchlist_sectors():
     """
-    For Watchlist rows where NSE Ticker (col B) is filled but Sector (col E) is empty:
-    fetches the industry from NSE India API and writes it to col E.
-    Only fills empty cells — never overwrites existing values.
+    Fetches sub-industry for ALL Watchlist companies from TheWrap Market Map and
+    writes to col E, overwriting existing values.
+    Companies not found in TheWrap are skipped (existing value preserved).
     Run with: python update_si_sheet.py --populate-sectors
     """
+    print("Watchlist: fetching Market Map from TheWrap...")
+    thewrap = _fetch_thewrap_market_map()
+    print(f"  {len(thewrap)} companies loaded from TheWrap")
+
+    # Normalised lookup: norm_name → row dict
+    tw_norm = {_norm_co(r["CompanyName"]): r for r in thewrap}
+
     ws      = sh.worksheet("Watchlist")
     D_START = 4
-
-    # Read B:E — r[0]=ticker, r[3]=sector (cols C and D in between); 1000 = no hard cap
+    # B=ticker, C=company name, D=middle, E=sector
     rows = ws.get(f"B{D_START}:E1000", value_render_option="FORMATTED_VALUE")
 
-    to_fill = []
+    updates = []
     for i, r in enumerate(rows):
-        r      = r + [""] * (4 - len(r))
-        ticker = r[0].strip()
-        sector = r[3].strip()
-        if ticker and not sector:
-            to_fill.append((D_START + i, ticker))
+        r       = r + [""] * (4 - len(r))
+        ticker  = r[0].strip()
+        co_name = r[1].strip()   # col C
+        if not ticker and not co_name:
+            continue
 
-    if not to_fill:
-        print("Watchlist: all sector cells already populated — nothing to do")
-        return
+        needle = _norm_co(co_name) if co_name else _norm_co(ticker)
+        match  = tw_norm.get(needle)
+        if not match:
+            close = difflib.get_close_matches(needle, tw_norm.keys(), n=1, cutoff=0.75)
+            match = tw_norm[close[0]] if close else None
 
-    print(f"Watchlist: fetching sectors for {len(to_fill)} companies via Yahoo Finance...")
-
-    for row_num, ticker in to_fill:
-        yf_ticker = ticker + ".NS"
-        sector = ""
-        try:
-            info   = yf.Ticker(yf_ticker).info
-            sector = info.get("industry") or info.get("sector") or ""
-        except Exception as e:
-            print(f"  {ticker}: fetch error ({e})")
-
-        if sector:
-            ws.update(range_name=f"E{row_num}", values=[[sector]],
-                      value_input_option="RAW")
-            print(f"  {ticker:20s} → {sector}")
+        row_num = D_START + i
+        if match:
+            sector = match["SubIndustry"]
+            updates.append({"range": f"E{row_num}", "values": [[sector]]})
+            print(f"  {(co_name or ticker):35s} → {sector}")
         else:
-            print(f"  {ticker:20s} → (not found — fill manually)")
+            print(f"  {(co_name or ticker):35s} → (not in TheWrap — skipped)")
 
-        time.sleep(1.5)
-
-    print("Watchlist: sector population complete")
+    if updates:
+        ws.batch_update(updates, value_input_option="RAW")
+        print(f"Watchlist: {len(updates)} sector cells updated")
+    else:
+        print("Watchlist: no TheWrap matches found")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1243,7 +1336,7 @@ if __name__ == "__main__":
     print("\nCreating/refreshing Watchlist...")
     create_watchlist()
 
-    print("\nFilling empty Watchlist sectors...")
+    print("\nUpdating Watchlist sectors from TheWrap...")
     populate_watchlist_sectors()
 
     print("\nDone. SI_Portfolio now updates automatically when All Trades changes.")
