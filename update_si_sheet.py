@@ -849,11 +849,18 @@ def apply_column_format(ws):
 
 
 def save_watchlist_format():
-    """Save current Watchlist column widths to watchlist_format.json."""
+    """Save current Watchlist column widths to watchlist_format.json.
+    Reads widths from the API (includeGridData=True) so it captures any
+    manual resizes made in the browser, not just the hardcoded defaults."""
     ws   = sh.worksheet("Watchlist")
     sid  = ws.id
-    meta = sh.fetch_sheet_metadata()
-    sheet_meta = next((s for s in meta.get("sheets", [])
+    resp = sh.client.request(
+        "GET",
+        f"https://sheets.googleapis.com/v4/spreadsheets/{sh.id}",
+        params={"fields": "sheets(properties/sheetId,data/columnMetadata)",
+                "includeGridData": "false"},
+    ).json()
+    sheet_meta = next((s for s in resp.get("sheets", [])
                        if s["properties"]["sheetId"] == sid), {})
     col_meta = sheet_meta.get("data", [{}])[0].get("columnMetadata", [])
     fmt = {}
@@ -865,6 +872,10 @@ def save_watchlist_format():
             entry["hidden"] = True
         if entry:
             fmt[str(i)] = entry
+    # If API returned nothing, fall back to hardcoded COL_W defaults
+    if not fmt:
+        COL_W = [35, 90, 220, 120, 120, 85, 85, 80, 110, 65, 120, 120, 120, 100, 250]
+        fmt = {str(i): {"width": w} for i, w in enumerate(COL_W)}
     with open(WATCHLIST_FORMAT_FILE, "w", encoding="utf-8") as f:
         json.dump(fmt, f, indent=2)
     print(f"Saved Watchlist format for {len(fmt)} columns → {WATCHLIST_FORMAT_FILE}")
@@ -904,16 +915,16 @@ def create_watchlist():
     """
     Creates or refreshes the Watchlist tab, positioned after SI_Portfolio.
 
-    User workflow: enter NSE Ticker (col B) + Last Disc. Date (col J) →
-    all formula columns auto-fill. Manual cols: B Ticker, D Sector,
-    J Last Disc. Date, M Status, N Notes. Safe to re-run at any time.
+    User workflow: enter NSE Ticker (col B) + Last Disc. Date (col K) →
+    all formula columns auto-fill. Manual cols: B Ticker, D Analyst,
+    E Sector, K Last Disc. Date, N Status, O Notes. Safe to re-run at any time.
 
     Columns:
-      A #  B Ticker  C Company  D Sector
-      E CMP  F 52W High  G 52W Low
-      H Mkt Cap (₹ Cr)  I P/E
-      J Last Disc. Date  K Last Disc. Price (₹)  L Chg since LDP %
-      M Status  N Notes
+      A #  B Ticker  C Company  D Analyst  E Sector
+      F CMP  G 52W High  H 52W Low
+      I Mkt Cap (₹ Cr)  J P/E
+      K Last Disc. Date  L Last Disc. Price (₹)  M Chg since LDP %
+      N Status  O Notes
     """
     NROWS = 100
 
@@ -922,7 +933,7 @@ def create_watchlist():
     try:
         ws = sh.worksheet("Watchlist")
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Watchlist", rows=NROWS + 10, cols=14)
+        ws = sh.add_worksheet(title="Watchlist", rows=NROWS + 10, cols=15)
         is_new = True
 
     sid     = ws.id
@@ -931,14 +942,23 @@ def create_watchlist():
 
     apply_fmt = is_new or "--format-watchlist" in sys.argv
 
+    # ── Insert Analyst column (col D) — idempotent ─────────────────────────
+    if ws.acell("D3").value != "Analyst":
+        sh.batch_update({"requests": [{"insertDimension": {
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": 3, "endIndex": 4},
+            "inheritFromBefore": False,
+        }}]})
+        print("Watchlist: Analyst column inserted at col D")
+
     # ── Headers (row 3) ────────────────────────────────────────────────────
     HEADERS = [
-        "#", "NSE Ticker", "Company", "Sector",
+        "#", "NSE Ticker", "Company", "Analyst", "Sector",
         "CMP (₹)", "52W High (₹)", "52W Low (₹)",
         "Mkt Cap (₹ Cr)", "P/E", "Last Disc. Date", "Last Disc. Price (₹)", "Chg since LDP %",
         "Status", "Notes",
     ]
-    ws.update(range_name="A3:N3", values=[HEADERS], value_input_option="RAW")
+    ws.update(range_name="A3:O3", values=[HEADERS], value_input_option="RAW")
 
     # ── Formula columns (rows 4 to last) ───────────────────────────────────
     rows = range(D_START, last + 1)
@@ -950,50 +970,50 @@ def create_watchlist():
 
     fcol(f"A{D_START}:A{last}", lambda r: f'=IF(B{r}="","",ROW()-3)')
     fcol(f"C{D_START}:C{last}", lambda r: f'=IF(B{r}="","",IFERROR(GOOGLEFINANCE("NSE:"&B{r},"name"),"—"))')
-    fcol(f"E{D_START}:E{last}", lambda r: gf("price",  r))
-    fcol(f"F{D_START}:F{last}", lambda r: gf("high52", r))
-    fcol(f"G{D_START}:G{last}", lambda r: gf("low52",  r))
-    fcol(f"H{D_START}:H{last}", lambda r:
+    fcol(f"F{D_START}:F{last}", lambda r: gf("price",  r))
+    fcol(f"G{D_START}:G{last}", lambda r: gf("high52", r))
+    fcol(f"H{D_START}:H{last}", lambda r: gf("low52",  r))
+    fcol(f"I{D_START}:I{last}", lambda r:
          f'=IF(B{r}="","",IFERROR(TEXT(GOOGLEFINANCE("NSE:"&B{r},"marketcap")/10000000,"#,##0"),"—"))')
-    fcol(f"I{D_START}:I{last}", lambda r: gf("pe", r))
+    fcol(f"J{D_START}:J{last}", lambda r: gf("pe", r))
     # Last Disc. Price: ISNUMBER check (date cells store a serial, not "")
-    fcol(f"K{D_START}:K{last}", lambda r:
-         f'=IF(OR(B{r}="",NOT(ISNUMBER(J{r}))),"",IFERROR(INDEX(GOOGLEFINANCE("NSE:"&B{r},"close",J{r},J{r}+7),2,2),"—"))')
     fcol(f"L{D_START}:L{last}", lambda r:
-         f'=IF(OR(B{r}="",NOT(ISNUMBER(K{r})),K{r}=0,NOT(ISNUMBER(E{r}))),"",TEXT((E{r}/K{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
+         f'=IF(OR(B{r}="",NOT(ISNUMBER(K{r}))),"",IFERROR(INDEX(GOOGLEFINANCE("NSE:"&B{r},"close",K{r},K{r}+7),2,2),"—"))')
+    fcol(f"M{D_START}:M{last}", lambda r:
+         f'=IF(OR(B{r}="",NOT(ISNUMBER(L{r})),L{r}=0,NOT(ISNUMBER(F{r}))),"",TEXT((F{r}/L{r}-1)*100,"+0.00;-0.00;0.00")&"%")')
 
     ws.freeze(rows=3)
 
-    # ── Date number format on col J — always applied (functional, not cosmetic)
+    # ── Date number format on col K — always applied (functional, not cosmetic)
     sh.batch_update({"requests": [{"repeatCell": {
         "range": {"sheetId": sid,
                   "startRowIndex": D_START - 1, "endRowIndex": last,
-                  "startColumnIndex": 9, "endColumnIndex": 10},
+                  "startColumnIndex": 10, "endColumnIndex": 11},
         "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
         "fields": "userEnteredFormat.numberFormat",
     }}]})
 
-    # ── Col L conditional format (red/green) — always applied, no other rules touched
+    # ── Col M conditional format (red/green) — always applied, no other rules touched
     POS_BG   = {"red": 0.902, "green": 0.957, "blue": 0.914}
     NEG_BG   = {"red": 0.992, "green": 0.887, "blue": 0.882}
     POS_TEXT = {"red": 0.118, "green": 0.408, "blue": 0.137}
     NEG_TEXT = {"red": 0.612, "green": 0.0,   "blue": 0.004}
-    L_RANGE  = {"sheetId": sid, "startRowIndex": D_START - 1, "endRowIndex": last,
-                "startColumnIndex": 11, "endColumnIndex": 12}
+    M_RANGE  = {"sheetId": sid, "startRowIndex": D_START - 1, "endRowIndex": last,
+                "startColumnIndex": 12, "endColumnIndex": 13}
 
     meta_now   = sh.fetch_sheet_metadata()
     sheet_meta = next((s for s in meta_now.get("sheets", [])
                        if s["properties"]["sheetId"] == sid), {})
     existing   = sheet_meta.get("conditionalFormats", [])
-    # Delete only rules that cover col L (startColumnIndex == 11)
+    # Delete only rules that cover col M (startColumnIndex == 12)
     l_rule_idxs = [i for i, r in enumerate(existing)
-                   if any(rng.get("startColumnIndex") == 11
+                   if any(rng.get("startColumnIndex") == 12
                           for rng in r.get("ranges", []))]
     delete_reqs = [{"deleteConditionalFormatRule": {"index": i, "sheetId": sid}}
                    for i in sorted(l_rule_idxs, reverse=True)]
     add_reqs = [
         {"addConditionalFormatRule": {"index": 0, "rule": {
-            "ranges": [L_RANGE],
+            "ranges": [M_RANGE],
             "booleanRule": {
                 "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "-"}]},
                 "format": {"backgroundColor": NEG_BG,
@@ -1001,11 +1021,11 @@ def create_watchlist():
             },
         }}},
         {"addConditionalFormatRule": {"index": 1, "rule": {
-            "ranges": [L_RANGE],
+            "ranges": [M_RANGE],
             "booleanRule": {
                 "condition": {"type": "CUSTOM_FORMULA",
                               "values": [{"userEnteredValue":
-                                  f'=AND(NOT(ISERROR(FIND("%",L{D_START}))),ISERROR(FIND("-",L{D_START})))'}]},
+                                  f'=AND(NOT(ISERROR(FIND("%",M{D_START}))),ISERROR(FIND("-",M{D_START})))'}]},
                 "format": {"backgroundColor": POS_BG,
                            "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
             },
@@ -1025,17 +1045,17 @@ def create_watchlist():
         NEG_TEXT = {"red": 0.612, "green": 0.0,   "blue": 0.004}
         BDR_MED  = {"red": 0.122, "green": 0.235, "blue": 0.392}
 
-        ws.format("A3:N3", {
+        ws.format("A3:O3", {
             "backgroundColor": NAVY,
             "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": WHITE},
             "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
             "wrapStrategy": "WRAP",
         })
-        ws.format(f"A{D_START}:N{last}", {"textFormat": {"fontSize": 10}, "verticalAlignment": "MIDDLE"})
+        ws.format(f"A{D_START}:O{last}", {"textFormat": {"fontSize": 10}, "verticalAlignment": "MIDDLE"})
         ws.format(f"A{D_START}:B{last}", {"horizontalAlignment": "CENTER"})
-        ws.format(f"C{D_START}:D{last}", {"horizontalAlignment": "LEFT"})
-        ws.format(f"E{D_START}:L{last}", {"horizontalAlignment": "RIGHT"})
-        ws.format(f"M{D_START}:N{last}", {"horizontalAlignment": "LEFT"})
+        ws.format(f"C{D_START}:E{last}", {"horizontalAlignment": "LEFT"})
+        ws.format(f"F{D_START}:M{last}", {"horizontalAlignment": "RIGHT"})
+        ws.format(f"N{D_START}:O{last}", {"horizontalAlignment": "LEFT"})
 
         def rng(r0, r1, c0, c1):
             return {"sheetId": sid,
@@ -1052,7 +1072,7 @@ def create_watchlist():
                 for _ in range(n_rules)
             ]})
 
-        COL_W = [35, 90, 220, 120, 85, 85, 80, 110, 65, 120, 120, 120, 100, 250]
+        COL_W = [35, 90, 220, 120, 120, 85, 85, 80, 110, 65, 120, 120, 120, 100, 250]
         sh.batch_update({"requests": [
             *[{"updateDimensionProperties": {
                 "range": {"sheetId": sid, "dimension": "COLUMNS",
@@ -1065,11 +1085,11 @@ def create_watchlist():
                 "properties": {"pixelSize": 40}, "fields": "pixelSize",
             }},
             {"updateBorders": {
-                "range": rng(3, 3, 0, 14),
+                "range": rng(3, 3, 0, 15),
                 "bottom": {"style": "SOLID_MEDIUM", "colorStyle": {"rgbColor": BDR_MED}},
             }},
             {"addConditionalFormatRule": {"index": 0, "rule": {
-                "ranges": [rng(D_START, last, 0, 14)],
+                "ranges": [rng(D_START, last, 0, 15)],
                 "booleanRule": {
                     "condition": {"type": "CUSTOM_FORMULA",
                                   "values": [{"userEnteredValue": "=MOD(ROW(),2)=0"}]},
@@ -1077,7 +1097,7 @@ def create_watchlist():
                 },
             }}},
             {"addConditionalFormatRule": {"index": 1, "rule": {
-                "ranges": [rng(D_START, last, 11, 12)],
+                "ranges": [rng(D_START, last, 12, 13)],
                 "booleanRule": {
                     "condition": {"type": "TEXT_CONTAINS",
                                   "values": [{"userEnteredValue": "-"}]},
@@ -1086,22 +1106,22 @@ def create_watchlist():
                 },
             }}},
             {"addConditionalFormatRule": {"index": 2, "rule": {
-                "ranges": [rng(D_START, last, 11, 12)],
+                "ranges": [rng(D_START, last, 12, 13)],
                 "booleanRule": {
                     "condition": {"type": "CUSTOM_FORMULA",
                                   "values": [{"userEnteredValue":
-                                      f'=AND(NOT(ISERROR(FIND("%",L{D_START}))),ISERROR(FIND("-",L{D_START})))'}]},
+                                      f'=AND(NOT(ISERROR(FIND("%",M{D_START}))),ISERROR(FIND("-",M{D_START})))'}]},
                     "format": {"backgroundColor": POS_BG,
                                "textFormat": {"foregroundColor": POS_TEXT, "bold": True}},
                 },
             }}},
             {"repeatCell": {
-                "range": rng(D_START, last, 9, 10),
+                "range": rng(D_START, last, 10, 11),
                 "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "dd-mmm-yyyy"}}},
                 "fields": "userEnteredFormat.numberFormat",
             }},
             {"setDataValidation": {
-                "range": rng(D_START, last, 12, 13),
+                "range": rng(D_START, last, 13, 14),
                 "rule": {
                     "condition": {
                         "type": "ONE_OF_LIST",
@@ -1112,6 +1132,7 @@ def create_watchlist():
                 },
             }},
         ]})
+        apply_watchlist_format(ws)   # restore saved column widths (no-op if file absent)
         print("Watchlist: formatting applied")
 
     # ── Position after SI_Portfolio ────────────────────────────────────────

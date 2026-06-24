@@ -88,6 +88,40 @@ def _parse_date(val):
         return None
 
 
+@st.cache_data(ttl=900)
+def load_watchlist():
+    """Read Watchlist tab from Google Sheets. Cached 15 min."""
+    creds = Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
+    gc    = gspread.authorize(creds)
+    ws    = gc.open_by_key(SPREADSHEET_ID).worksheet("Watchlist")
+    # B:O = 14 cols; row 4 onwards (skip header rows 1-3)
+    rows  = ws.get("B4:O103", value_render_option="FORMATTED_VALUE")
+    result = []
+    for r in rows:
+        r = r + [""] * (14 - len(r))          # pad to 14 cols
+        ticker = str(r[0]).strip()
+        if not ticker:
+            continue
+        result.append({
+            "Ticker":               ticker,
+            "Company":              r[1],
+            "Analyst":              r[2],
+            "Sector":               r[3],
+            "CMP (₹)":              r[4],
+            "52W High (₹)":         r[5],
+            "52W Low (₹)":          r[6],
+            # r[7] = Mkt Cap (hidden column — skipped)
+            "P/E":                  r[8],
+            "Last Disc. Date":      r[9],
+            "Last Disc. Price (₹)": r[10],
+            "Chg since LDP %":      r[11],
+            "Status":               r[12],
+            "Notes":                r[13],
+        })
+    return result
+
+
 @st.cache_data(ttl=3600)
 def load_raw_transactions():
     """Read All Trades from Google Sheets. Cached for 1 hour."""
@@ -590,6 +624,52 @@ def main():
             "Note":       t.get("note", ""),
         } for t in txns]).sort_values("Date", ascending=False)
         st.dataframe(hist, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Watchlist ──────────────────────────────────────────────────────────────
+    st.subheader("Watchlist")
+
+    watchlist = load_watchlist()
+    if not watchlist:
+        st.info("No entries in Watchlist yet.")
+    else:
+        df_wl = pd.DataFrame(watchlist)
+
+        # Filters
+        f1, f2 = st.columns([2, 3])
+        statuses = sorted(s for s in df_wl["Status"].unique() if s)
+        sel_status = f1.multiselect("Status", statuses, default=statuses)
+        analysts   = sorted(a for a in df_wl["Analyst"].unique() if a)
+        sel_analyst = f2.multiselect("Analyst", analysts, default=analysts) if analysts else []
+
+        mask = df_wl["Status"].isin(sel_status) | ~df_wl["Status"].isin(statuses)
+        if sel_analyst:
+            mask &= df_wl["Analyst"].isin(sel_analyst) | ~df_wl["Analyst"].isin(analysts)
+        df_show = df_wl[mask].reset_index(drop=True)
+
+        show_cols = [
+            "Company", "Analyst", "Sector",
+            "CMP (₹)", "52W High (₹)", "52W Low (₹)", "P/E",
+            "Last Disc. Date", "Last Disc. Price (₹)", "Chg since LDP %",
+            "Status", "Notes",
+        ]
+
+        def _color_chg(val):
+            if isinstance(val, str) and val.startswith("+"):
+                return "color:#1f77b4;font-weight:bold"
+            if isinstance(val, str) and val.startswith("-"):
+                return "color:#d62728;font-weight:bold"
+            return ""
+
+        st.dataframe(
+            df_show[show_cols].style.map(_color_chg, subset=["Chg since LDP %"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(f"{len(df_show)} of {len(df_wl)} companies shown")
+
+    st.divider()
 
     st.caption(
         f"Refreshed: {datetime.now().strftime('%d %b %Y %I:%M %p')}  |  "
