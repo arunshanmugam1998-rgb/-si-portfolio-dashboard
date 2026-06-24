@@ -1203,6 +1203,16 @@ _TW_BODY = {
 }
 
 
+# Manual overrides where TheWrap's classification is materially inaccurate.
+# Key = exact company name as it appears in Watchlist col C.
+# Add entries here whenever a TheWrap classification is quizzed and overridden.
+SECTOR_OVERRIDES = {
+    "Medi Assist Healthcare Services Ltd": "Healthcare Services",  # TPA, not insurer
+    "Control Print Ltd":                   "Capital Goods",        # industrial marking equipment, not packaging
+    "Carborundum Universal Ltd":           "Abrasives & Ceramics", # abrasives/ceramics/electrominerals, not tools/fasteners
+}
+
+
 def _fetch_thewrap_market_map():
     """Call TheWrap Power BI public API and return list of {CompanyName, SubIndustry, Industry}."""
     resp = requests.post(
@@ -1288,10 +1298,14 @@ def populate_watchlist_sectors():
             match = tw_norm[close[0]] if close else None
 
         row_num = D_START + i
-        if match:
+        if co_name in SECTOR_OVERRIDES:
+            sector = SECTOR_OVERRIDES[co_name]
+            updates.append({"range": f"E{row_num}", "values": [[sector]]})
+            print(f"  {co_name:35s} → {sector}  [override]")
+        elif match:
             sector = match["SubIndustry"]
             updates.append({"range": f"E{row_num}", "values": [[sector]]})
-            print(f"  {(co_name or ticker):35s} → {sector}")
+            print(f"  {(co_name or ticker):35s} → {sector}  [{match['CompanyName']}]")
         else:
             print(f"  {(co_name or ticker):35s} → (not in TheWrap — skipped)")
 
