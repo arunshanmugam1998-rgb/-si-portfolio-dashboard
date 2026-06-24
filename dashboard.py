@@ -108,9 +108,8 @@ def load_ticker_map():
                 continue
             company = r[0].strip()
             ticker  = r[1].strip()
-            # Skip header/section rows: ticker col must be a valid NSE symbol
-            # (non-empty, no spaces, all uppercase or alphanumeric)
-            if not company or not ticker or " " in ticker or ticker == ticker.lower():
+            # Skip header/section rows — valid NSE ticker is all-uppercase, no spaces
+            if not company or not ticker or ticker.upper() != ticker:
                 continue
             tickers[company] = ticker + ".NS"
         return tickers, {}
@@ -125,8 +124,8 @@ def load_watchlist():
                 dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
     gc    = gspread.authorize(creds)
     ws    = gc.open_by_key(SPREADSHEET_ID).worksheet("Watchlist")
-    # B:O = 14 cols; row 4 onwards (skip header rows 1-3)
-    rows  = ws.get("B4:O103", value_render_option="FORMATTED_VALUE")
+    # B:O = 14 cols; row 4 onwards (skip header rows 1-3); 1000 = no hard cap
+    rows  = ws.get("B4:O1000", value_render_option="FORMATTED_VALUE")
     result = []
     for r in rows:
         r = r + [""] * (14 - len(r))          # pad to 14 cols

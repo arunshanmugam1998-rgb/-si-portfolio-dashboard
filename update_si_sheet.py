@@ -10,6 +10,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 import json
 import os
+import time
+import yfinance as yf
 from datetime import date, datetime
 from collections import defaultdict
 import gspread
@@ -1148,6 +1150,57 @@ def create_watchlist():
         print("Watchlist: positioned after SI_Portfolio")
 
 
+# ── Watchlist sector population ───────────────────────────────────────────────
+def populate_watchlist_sectors():
+    """
+    For Watchlist rows where NSE Ticker (col B) is filled but Sector (col E) is empty:
+    fetches the industry from NSE India API and writes it to col E.
+    Only fills empty cells — never overwrites existing values.
+    Run with: python update_si_sheet.py --populate-sectors
+    """
+    ws      = sh.worksheet("Watchlist")
+    D_START = 4
+    NROWS   = 100
+    last    = D_START + NROWS - 1
+
+    # Read B:E — r[0]=ticker, r[3]=sector (cols C and D in between)
+    rows = ws.get(f"B{D_START}:E{last}", value_render_option="FORMATTED_VALUE")
+
+    to_fill = []
+    for i, r in enumerate(rows):
+        r      = r + [""] * (4 - len(r))
+        ticker = r[0].strip()
+        sector = r[3].strip()
+        if ticker and not sector:
+            to_fill.append((D_START + i, ticker))
+
+    if not to_fill:
+        print("Watchlist: all sector cells already populated — nothing to do")
+        return
+
+    print(f"Watchlist: fetching sectors for {len(to_fill)} companies via Yahoo Finance...")
+
+    for row_num, ticker in to_fill:
+        yf_ticker = ticker + ".NS"
+        sector = ""
+        try:
+            info   = yf.Ticker(yf_ticker).info
+            sector = info.get("industry") or info.get("sector") or ""
+        except Exception as e:
+            print(f"  {ticker}: fetch error ({e})")
+
+        if sector:
+            ws.update(range_name=f"E{row_num}", values=[[sector]],
+                      value_input_option="RAW")
+            print(f"  {ticker:20s} → {sector}")
+        else:
+            print(f"  {ticker:20s} → (not found — fill manually)")
+
+        time.sleep(0.3)
+
+    print("Watchlist: sector population complete")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if "--save-format" in sys.argv:
@@ -1158,6 +1211,10 @@ if __name__ == "__main__":
     if "--save-watchlist-format" in sys.argv:
         print("Saving current Watchlist column format...")
         save_watchlist_format()
+        sys.exit(0)
+
+    if "--populate-sectors" in sys.argv:
+        populate_watchlist_sectors()
         sys.exit(0)
 
     print("Fixing All Trades: converting text numbers to numeric values...")
