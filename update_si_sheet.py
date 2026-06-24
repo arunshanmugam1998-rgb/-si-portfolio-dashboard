@@ -1214,6 +1214,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if "--populate-sectors" in sys.argv:
+        # Standalone run: refresh all empty sectors without running the full update
         populate_watchlist_sectors()
         sys.exit(0)
 
@@ -1234,6 +1235,9 @@ if __name__ == "__main__":
 
     print("\nCreating/refreshing Watchlist...")
     create_watchlist()
+
+    print("\nFilling empty Watchlist sectors...")
+    populate_watchlist_sectors()
 
     print("\nDone. SI_Portfolio now updates automatically when All Trades changes.")
     print("Re-run this script only when: adding a new company, or after a demerger.")
