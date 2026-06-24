@@ -1148,6 +1148,66 @@ def create_watchlist():
         print("Watchlist: positioned after SI_Portfolio")
 
 
+# ── Tickers mapping sheet ─────────────────────────────────────────────────────
+def create_ticker_map():
+    """
+    Create (or update) a 'Tickers' sheet with columns:
+      A  Company Name  — exactly as typed in All Trades
+      B  NSE Ticker    — yfinance format, e.g. SANSERA.NS
+      C  Display Name  — short label for dashboard charts
+
+    Idempotent: only adds rows for companies not already present.
+    Never overwrites existing rows — user can edit freely.
+    To add a new company: add a row here then re-run the script.
+    """
+    SEED = [
+        ["Aditya Birla Fashion and Retail Ltd", "ABFRL.NS",       "ABFRL"],
+        ["Aditya Birla Lifestyle Brands Ltd",   "ABLBL.NS",        "ABLBL"],
+        ["Federal Bank Ltd",                    "FEDERALBNK.NS",   "Federal Bank"],
+        ["FSN E-Commerce Ventures Ltd",         "NYKAA.NS",        "Nykaa"],
+        ["Newgen Software Technologies Ltd",    "NEWGEN.NS",       "Newgen"],
+        ["Indegene Ltd",                        "INDGN.NS",        "Indegene"],
+        ["EID Parry (India) Ltd",               "EIDPARRY.NS",     "EID Parry"],
+        ["Gujarat Fluorochemicals Ltd",         "FLUOROCHEM.NS",   "Guj. Fluorochem"],
+        ["Greenlam Industries Ltd",             "GREENLAM.NS",     "Greenlam"],
+        ["Sundaram Clayton Ltd",                "SUNCLAY.NS",      "Sundaram Clayton"],
+        ["Aether Industries Ltd",               "AETHER.NS",       "Aether"],
+        ["HDFC Bank Ltd",                       "HDFCBANK.NS",     "HDFC Bank"],
+        ["Sansera Engineering Ltd",             "SANSERA.NS",      "Sansera"],
+    ]
+    NAVY  = {"red": 0.122, "green": 0.235, "blue": 0.392}
+    WHITE = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+
+    try:
+        ws = sh.worksheet("Tickers")
+        existing_names = {r[0].strip() for r in ws.get("A2:A200") if r and r[0].strip()}
+        to_add = [row for row in SEED if row[0] not in existing_names]
+        if to_add:
+            next_row = len(ws.get_all_values()) + 1
+            ws.update(range_name=f"A{next_row}:C{next_row + len(to_add) - 1}",
+                      values=to_add, value_input_option="RAW")
+            print(f"Tickers: {len(to_add)} new rows added")
+        else:
+            print("Tickers: up to date")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Tickers", rows=200, cols=3)
+        ws.update(range_name="A1:C1",
+                  values=[["Company Name (All Trades)", "NSE Ticker (yfinance)", "Display Name"]],
+                  value_input_option="RAW")
+        ws.update(range_name=f"A2:C{1 + len(SEED)}",
+                  values=SEED, value_input_option="RAW")
+        ws.format("A1:C1", {
+            "backgroundColor": NAVY,
+            "textFormat": {"bold": True, "foregroundColor": WHITE},
+        })
+        sh.batch_update({"requests": [{"updateDimensionProperties": {
+            "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize",
+        }} for i, w in enumerate([320, 160, 180])]})
+        print(f"Tickers: sheet created with {len(SEED)} companies")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if "--save-format" in sys.argv:
@@ -1177,6 +1237,9 @@ if __name__ == "__main__":
 
     print("\nCreating/refreshing Watchlist...")
     create_watchlist()
+
+    print("\nCreating/updating Tickers map...")
+    create_ticker_map()
 
     print("\nDone. SI_Portfolio now updates automatically when All Trades changes.")
     print("Re-run this script only when: adding a new company, or after a demerger.")

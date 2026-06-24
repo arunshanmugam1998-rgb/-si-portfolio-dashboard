@@ -88,6 +88,30 @@ def _parse_date(val):
         return None
 
 
+@st.cache_data(ttl=3600)
+def load_ticker_map():
+    """Read 'Tickers' sheet → (tickers_dict, display_dict). Falls back to empty dicts."""
+    creds = Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
+    gc    = gspread.authorize(creds)
+    try:
+        ws   = gc.open_by_key(SPREADSHEET_ID).worksheet("Tickers")
+        rows = ws.get("A2:C200", value_render_option="FORMATTED_VALUE")
+        tickers, display = {}, {}
+        for r in rows:
+            if not r or not r[0].strip():
+                continue
+            name   = r[0].strip()
+            ticker = r[1].strip() if len(r) > 1 and r[1].strip() else ""
+            disp   = r[2].strip() if len(r) > 2 and r[2].strip() else name
+            if ticker:
+                tickers[name] = ticker
+            display[name] = disp
+        return tickers, display
+    except Exception:
+        return {}, {}
+
+
 @st.cache_data(ttl=900)
 def load_watchlist():
     """Read Watchlist tab from Google Sheets. Cached 15 min."""
@@ -235,9 +259,11 @@ def build_positions(txns):
 # ── Live prices ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=900)
 def fetch_prices(companies: tuple):
+    sheet_tickers, _ = load_ticker_map()
+    all_tickers = {**TICKERS, **sheet_tickers}   # sheet overrides hardcoded
     prices, sources = {}, {}
     for co in companies:
-        ticker = TICKERS.get(co)
+        ticker = all_tickers.get(co)
         if ticker:
             try:
                 px_val = yf.Ticker(ticker).fast_info.last_price
@@ -374,6 +400,9 @@ def main():
         st.cache_data.clear()
         st.rerun()
 
+    _, sheet_display = load_ticker_map()
+    active_display   = {**DISPLAY, **sheet_display}   # sheet overrides hardcoded
+
     raw   = load_raw_transactions()
     txns  = apply_corporate_actions(raw)
     pos   = build_positions(txns)
@@ -398,7 +427,7 @@ def main():
         days     = (date.today() - p["first_buy"]).days if p["first_buy"] else 0
         xi       = xirr_map.get(co)
         row = {
-            "Company":       DISPLAY.get(co, co),
+            "Company":       active_display.get(co, co),
             "_key":          co,
             "Qty":           int(round(qty)),
             "Avg Cost (₹)":  round(avg_cost, 2),
@@ -558,13 +587,13 @@ def main():
     xirr_options  = []
     seen_combined = False
     combined_keys = {ABFRL, ABLBL}
-    for co in sorted(pos.keys(), key=lambda c: DISPLAY.get(c, c)):
+    for co in sorted(pos.keys(), key=lambda c: active_display.get(c, c)):
         if co in combined_keys:
             if not seen_combined:
                 xirr_options.append("ABFRL + ABLBL (combined)")
                 seen_combined = True
         else:
-            xirr_options.append(DISPLAY.get(co, co))
+            xirr_options.append(active_display.get(co, co))
 
     selected = st.selectbox("Select a company to see its XIRR cash flows:", xirr_options)
 
@@ -572,7 +601,7 @@ def main():
     if selected == "ABFRL + ABLBL (combined)":
         lookup = ABFRL
     else:
-        lookup = next((k for k, v in DISPLAY.items() if v == selected), selected)
+        lookup = next((k for k, v in active_display.items() if v == selected), selected)
 
     xi, cf_rows = get_xirr_cashflows(lookup, txns, pos, prices)
 
