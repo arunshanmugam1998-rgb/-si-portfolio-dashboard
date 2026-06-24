@@ -230,6 +230,14 @@ def get_company_statuses():
                 if d and d < parent_dem_date[name]:
                     parent_pre_buy[name] += qty
 
+    # Auto-extend COMPANIES with any new names found in All Trades (preserves order, appends new)
+    all_traded = sorted(set(buy_qty.keys()) | set(sell_qty.keys()))
+    for name in all_traded:
+        if name and name not in COMPANIES:
+            COMPANIES.append(name)
+            ticker_hint = " — add NSE ticker to TICKERS dict for live prices" if name not in TICKERS else ""
+            print(f"  Auto-discovered new company: {name!r}{ticker_hint}")
+
     print("  Open/Closed status per company:")
     statuses = {}
     for co in COMPANIES:
@@ -945,7 +953,8 @@ def create_watchlist():
     apply_fmt = is_new or "--format-watchlist" in sys.argv
 
     # ── Insert Analyst column (col D) — idempotent ─────────────────────────
-    if ws.acell("D3").value != "Analyst":
+    row3 = ws.row_values(3)
+    if len(row3) < 4 or row3[3] != "Analyst":
         sh.batch_update({"requests": [{"insertDimension": {
             "range": {"sheetId": sid, "dimension": "COLUMNS",
                       "startIndex": 3, "endIndex": 4},
@@ -1160,11 +1169,9 @@ def populate_watchlist_sectors():
     """
     ws      = sh.worksheet("Watchlist")
     D_START = 4
-    NROWS   = 100
-    last    = D_START + NROWS - 1
 
-    # Read B:E — r[0]=ticker, r[3]=sector (cols C and D in between)
-    rows = ws.get(f"B{D_START}:E{last}", value_render_option="FORMATTED_VALUE")
+    # Read B:E — r[0]=ticker, r[3]=sector (cols C and D in between); 1000 = no hard cap
+    rows = ws.get(f"B{D_START}:E1000", value_render_option="FORMATTED_VALUE")
 
     to_fill = []
     for i, r in enumerate(rows):
@@ -1196,7 +1203,7 @@ def populate_watchlist_sectors():
         else:
             print(f"  {ticker:20s} → (not found — fill manually)")
 
-        time.sleep(0.3)
+        time.sleep(1.5)
 
     print("Watchlist: sector population complete")
 
