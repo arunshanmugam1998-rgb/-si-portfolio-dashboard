@@ -671,15 +671,19 @@ def main():
         df_wl = pd.DataFrame(watchlist)
 
         # Filters
-        f1, f2 = st.columns([2, 3])
+        f1, f2, f3 = st.columns(3)
         statuses = sorted(s for s in df_wl["Status"].unique() if s)
-        sel_status = f1.multiselect("Status", statuses, default=statuses)
-        analysts   = sorted(a for a in df_wl["Analyst"].unique() if a)
+        sel_status  = f1.multiselect("Status",  statuses, default=statuses)
+        analysts    = sorted(a for a in df_wl["Analyst"].unique() if a)
         sel_analyst = f2.multiselect("Analyst", analysts, default=analysts) if analysts else []
+        sectors     = sorted(s for s in df_wl["Sector"].unique() if s)
+        sel_sector  = f3.multiselect("Sector",  sectors,  default=sectors)  if sectors  else []
 
         mask = df_wl["Status"].isin(sel_status) | ~df_wl["Status"].isin(statuses)
         if sel_analyst:
             mask &= df_wl["Analyst"].isin(sel_analyst) | ~df_wl["Analyst"].isin(analysts)
+        if sel_sector:
+            mask &= df_wl["Sector"].isin(sel_sector) | ~df_wl["Sector"].isin(sectors)
         df_show = df_wl[mask].reset_index(drop=True)
 
         show_cols = [
