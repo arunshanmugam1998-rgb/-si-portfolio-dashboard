@@ -90,24 +90,27 @@ def _parse_date(val):
 
 @st.cache_data(ttl=3600)
 def load_ticker_map():
-    """Read 'Tickers' sheet → (tickers_dict, display_dict). Falls back to empty dicts."""
+    """
+    Build ticker map from the Watchlist sheet (col B = NSE ticker, col C = company name).
+    Returns (tickers_dict, display_dict) keyed by company name.
+    Appends '.NS' to convert NSE ticker to yfinance format.
+    Falls back to empty dicts on any error.
+    """
     creds = Credentials.from_service_account_info(
                 dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
     gc    = gspread.authorize(creds)
     try:
-        ws   = gc.open_by_key(SPREADSHEET_ID).worksheet("Tickers")
-        rows = ws.get("A2:C200", value_render_option="FORMATTED_VALUE")
-        tickers, display = {}, {}
+        ws   = gc.open_by_key(SPREADSHEET_ID).worksheet("Watchlist")
+        # B4:C103 — col B = NSE ticker (user-entered), col C = company name (GOOGLEFINANCE)
+        rows = ws.get("B4:C103", value_render_option="FORMATTED_VALUE")
+        tickers = {}
         for r in rows:
-            if not r or not r[0].strip():
+            if len(r) < 2 or not r[0].strip() or not r[1].strip():
                 continue
-            name   = r[0].strip()
-            ticker = r[1].strip() if len(r) > 1 and r[1].strip() else ""
-            disp   = r[2].strip() if len(r) > 2 and r[2].strip() else name
-            if ticker:
-                tickers[name] = ticker
-            display[name] = disp
-        return tickers, display
+            nse_ticker   = r[0].strip()          # e.g. "SANSERA"
+            company_name = r[1].strip()          # e.g. "Sansera Engineering Ltd"
+            tickers[company_name] = nse_ticker + ".NS"
+        return tickers, {}   # display names: fall back to hardcoded DISPLAY
     except Exception:
         return {}, {}
 
