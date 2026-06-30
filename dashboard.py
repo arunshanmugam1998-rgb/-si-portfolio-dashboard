@@ -7,6 +7,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from datetime import date, datetime, timedelta
 from collections import defaultdict
+import urllib.parse
 
 import streamlit as st
 import pandas as pd
@@ -15,6 +16,7 @@ import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
 import yfinance as yf
+from streamlit_plotly_events import plotly_events
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -108,17 +110,34 @@ SECTOR_PALETTE = {
     "Other":                "#94a3b8",
 }
 
+# Market-cap classification (SEBI: Large=top 100, Mid=101-250, Small=251+)
+CAP_CLASS = {
+    "HDFC Bank":        "Large",
+    "Federal Bank":     "Mid",
+    "Nykaa":            "Mid",
+    "Guj. Fluorochem":  "Mid",
+    "EID Parry":        "Mid",
+    "Indegene":         "Mid",
+    "ABFRL":            "Mid",
+    "Sundaram Clayton": "Small",
+    "Greenlam":         "Small",
+    "ABLBL":            "Small",
+    "Aether":           "Small",
+    "Sansera":          "Small",
+}
+CAP_COLOR = {"Large": "#818cf8", "Mid": "#fbbf24", "Small": "#34d399"}
+
 # ── Theme constants ────────────────────────────────────────────────────────────
-BG     = "#0f172a"   # page background
-CARD   = "#1e293b"   # card / chart background
-BORDER = "#334155"   # borders, gridlines
-T1     = "#f1f5f9"   # primary text
-T2     = "#94a3b8"   # secondary text
-T3     = "#475569"   # muted text
-POS    = "#10b981"   # positive / green
-NEG    = "#f43f5e"   # negative / red
-ACC    = "#818cf8"   # accent indigo
-GOLD   = "#fbbf24"   # highlight amber
+BG     = "#18181b"   # zinc-900  dark grey page background
+CARD   = "#27272a"   # zinc-800  card / chart background
+BORDER = "#3f3f46"   # zinc-700  borders, gridlines
+T1     = "#fafafa"   # zinc-50   primary text (near-white)
+T2     = "#d4d4d8"   # zinc-300  secondary text (light grey)
+T3     = "#71717a"   # zinc-500  muted text
+POS    = "#22c55e"   # green-500
+NEG    = "#ef4444"   # red-500
+ACC    = "#818cf8"   # indigo-400
+GOLD   = "#fbbf24"   # amber-400
 FONT   = "'Aptos Display', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif"
 
 # Base chart layout — NO xaxis/yaxis here (each chart sets those individually)
@@ -143,6 +162,10 @@ _CSS = f"""
 html, body, * {{
     font-family: {FONT} !important;
 }}
+/* Restore Material Symbols for Streamlit UI icons */
+[data-testid="stIconMaterial"] {{
+    font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+}}
 
 /* Metric cards */
 [data-testid="stMetric"] {{
@@ -150,6 +173,7 @@ html, body, * {{
     border: 1px solid {BORDER};
     border-radius: 12px;
     padding: 18px 22px !important;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.55), 0 0 0 1px {BORDER};
 }}
 [data-testid="stMetricLabel"] p {{
     color: {T3} !important;
@@ -179,7 +203,7 @@ html, body, * {{
 }}
 [data-testid="baseButton-secondary"]:hover {{
     border-color: {ACC} !important;
-    background: #273449 !important;
+    background: rgba(129,140,248,0.18) !important;
 }}
 
 /* DataFrames */
@@ -198,7 +222,11 @@ details {{
 summary {{ color: {T2} !important; font-weight: 600; font-size: 13px; }}
 
 /* Multiselect */
-[data-baseweb="tag"] {{ background: #2d3f6e !important; }}
+[data-baseweb="tag"] {{ background: #e0e7ff !important; color: #18181b !important; }}
+[data-baseweb="tag"] span {{ color: #18181b !important; }}
+[data-baseweb="tag"] svg {{ fill: #18181b !important; }}
+[data-baseweb="menu"] li {{ color: #18181b !important; }}
+[data-baseweb="select"] [data-testid="stMarkdownContainer"] {{ color: #18181b !important; }}
 
 /* Dividers */
 hr {{ border-color: {BORDER} !important; }}
@@ -217,11 +245,99 @@ hr {{ border-color: {BORDER} !important; }}
     font-weight: 700;
     letter-spacing: 2px;
     text-transform: uppercase;
-    color: {T3};
+    color: {T2};
     margin-bottom: 14px;
     margin-top: 6px;
     display: block;
 }}
+
+/* Treemap expanded company card */
+@keyframes expandCard {{
+    from {{ opacity: 0; transform: scale(0.82) translateY(16px); }}
+    to   {{ opacity: 1; transform: scale(1)    translateY(0);     }}
+}}
+@keyframes fadeChart {{
+    from {{ opacity: 0; }}
+    to   {{ opacity: 1; }}
+}}
+.company-expanded {{
+    background: linear-gradient(145deg, #2d2d35 0%, #1e1e28 100%);
+    border: 1px solid {BORDER};
+    border-radius: 16px;
+    padding: 32px 28px 24px 28px;
+    min-height: 340px;
+    animation: expandCard 0.38s cubic-bezier(0.34,1.56,0.64,1) forwards;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    font-family: {FONT};
+}}
+.company-exp-name {{
+    font-size: 26px; font-weight: 800; color: {T1};
+    letter-spacing: -0.5px; line-height: 1.1;
+}}
+.company-exp-sector {{
+    font-size: 11px; color: {T3};
+    text-transform: uppercase; letter-spacing: 1.8px; margin-top: -12px;
+}}
+.company-exp-grid {{
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 4px;
+}}
+.exp-metric {{
+    background: rgba(255,255,255,0.04); border: 1px solid {BORDER};
+    border-radius: 10px; padding: 14px 16px;
+}}
+.exp-label {{
+    font-size: 9px; font-weight: 700; letter-spacing: 1.6px;
+    text-transform: uppercase; color: {T3}; margin-bottom: 8px;
+}}
+.exp-val {{ font-size: 18px; font-weight: 700; color: {T1}; line-height: 1.2; }}
+.exp-delta {{ font-size: 12px; font-weight: 600; margin-top: 3px; }}
+.back-hint {{ font-size: 11px; color: {T3}; margin-top: 8px; text-align: center; }}
+
+[data-testid="stPlotlyChart"] {{ animation: fadeChart 0.35s ease; }}
+
+/* Portfolio card grid */
+.port-card {{
+    background: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 12px;
+    padding: 18px 18px 16px 22px;
+    position: relative;
+    overflow: hidden;
+    display: block;
+    cursor: pointer;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    margin-bottom: 0;
+}}
+.port-card:hover {{
+    border-color: #52525b;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+}}
+.port-accent {{
+    position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    border-radius: 12px 0 0 12px;
+}}
+.port-name {{ font-size: 13px; font-weight: 700; color: {T1}; margin-bottom: 3px; }}
+.port-sec {{
+    font-size: 9px; color: {T3};
+    text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 14px;
+}}
+.port-metrics {{ display: flex; gap: 18px; }}
+.pm {{ display: flex; flex-direction: column; gap: 2px; }}
+.pm-label {{ font-size: 9px; color: {T3}; text-transform: uppercase; letter-spacing: 0.7px; }}
+.pm-val {{ font-size: 14px; font-weight: 700; color: {T1}; line-height: 1.2; }}
+/* Cap chip */
+.cap-chip {{
+    display: inline-block; font-size: 8px; font-weight: 700;
+    letter-spacing: 0.7px; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 4px; margin-left: 7px;
+    vertical-align: middle; line-height: 1.6;
+}}
+.cap-large {{ background: rgba(129,140,248,0.18); color: #818cf8; }}
+.cap-mid   {{ background: rgba(251,191,36,0.18);  color: #fbbf24; }}
+.cap-small {{ background: rgba(52,211,153,0.18);  color: #34d399; }}
 </style>
 """
 
@@ -485,6 +601,45 @@ def compute_xirr_all(txns, positions, prices):
     return xirr_map
 
 
+# ── Popup dialogs ─────────────────────────────────────────────────────────────
+@st.dialog("Sector Breakdown")
+def _sector_popup(sector, rows):
+    st.markdown(
+        f"<div style='font-size:15px;font-weight:700;color:{T1};"
+        f"font-family:{FONT};margin-bottom:14px;'>{sector}</div>",
+        unsafe_allow_html=True,
+    )
+    for r in rows:
+        c1, c2, c3, c4 = st.columns([5, 3, 2, 2])
+        c1.write(r["Company"])
+        c2.write(r["_val_str"])
+        c3.write(f"{r['Weight %']:.1f}%")
+        c4.markdown(
+            f"<span style='color:{'#059669' if r['P&L %'] >= 0 else '#dc2626'};font-weight:600'>"
+            f"{r['P&L %']:+.1f}%</span>",
+            unsafe_allow_html=True,
+        )
+
+
+def _cap_popup(cap_label, rows):
+    cap_color = CAP_COLOR.get(cap_label, ACC)
+    st.markdown(
+        f"<div style='font-size:15px;font-weight:700;color:{cap_color};"
+        f"font-family:{FONT};margin-bottom:14px;'>{cap_label} Cap</div>",
+        unsafe_allow_html=True,
+    )
+    for r in rows:
+        c1, c2, c3, c4 = st.columns([5, 3, 2, 2])
+        c1.write(r["Company"])
+        c2.write(r["_val_str"])
+        c3.write(f"{r['Weight %']:.1f}%")
+        c4.markdown(
+            f"<span style='color:{'#059669' if r['P&L %'] >= 0 else '#dc2626'};font-weight:600'>"
+            f"{r['P&L %']:+.1f}%</span>",
+            unsafe_allow_html=True,
+        )
+
+
 # ── App ────────────────────────────────────────────────────────────────────────
 def main():
     st.markdown(_CSS, unsafe_allow_html=True)
@@ -492,11 +647,11 @@ def main():
     # ── Header ────────────────────────────────────────────────────────────────
     hdr_l, hdr_r = st.columns([5, 1])
     hdr_l.markdown(
-        f"<div style='padding:4px 0 20px 0;border-bottom:1px solid {BORDER};'>"
-        f"<div style='font-size:20px;font-weight:800;color:{T1};letter-spacing:-0.3px;"
+        f"<div style='padding:4px 0 20px 0;border-bottom:2px solid {BORDER};'>"
+        f"<div style='font-size:22px;font-weight:800;color:{T1};letter-spacing:-0.5px;"
         f"font-family:{FONT};'>SPECIALE INCEPT</div>"
         f"<div style='font-size:10px;color:{T3};letter-spacing:2px;text-transform:uppercase;"
-        f"margin-top:3px;font-family:{FONT};'>"
+        f"margin-top:4px;font-family:{FONT};'>"
         f"Listed Equity Portfolio &nbsp;&middot;&nbsp; IC Dashboard &nbsp;&middot;&nbsp; "
         f"{datetime.now().strftime('%d %b %Y')}</div></div>",
         unsafe_allow_html=True,
@@ -612,38 +767,214 @@ def main():
     st.markdown("<br>", unsafe_allow_html=True)
     st.divider()
 
-    # ── Portfolio Composition ─────────────────────────────────────────────────
-    lbl("Portfolio Composition")
+    # ── Performance ────────────────────────────────────────────────────────────
+    lbl("Performance")
+    perf_l, perf_r = st.columns(2)
+
+    with perf_l:
+        xi_df = df_open[["Company", "XIRR %"]].dropna().sort_values("XIRR %")
+        _xi_h  = max(420, len(xi_df) * 38 + 80)
+        _LABEL_FONT = "Aptos Display, Segoe UI, sans-serif"
+        fig_xi = go.Figure(go.Bar(
+            x=xi_df["XIRR %"], y=xi_df["Company"], orientation="h",
+            marker_color=[NEG if v < 0 else POS for v in xi_df["XIRR %"]],
+            hovertemplate="<b>%{y}</b><br>XIRR: %{x:+.1f}%<extra></extra>",
+        ))
+        xi_annotations = [dict(
+            xref="paper", yref="y", x=0.99, y=row["Company"],
+            text=f"{row['XIRR %']:+.1f}%", showarrow=False, xanchor="right",
+            font=dict(size=10, family=_LABEL_FONT, color="#ffffff"),
+        ) for _, row in xi_df.iterrows()]
+        fig_xi.update_layout(
+            **_chart_base(_xi_h, t=44, r=60),
+            title=dict(text="XIRR by Stock", font=dict(size=12, color=T1, family=FONT), x=0),
+            xaxis=dict(showticklabels=False, gridcolor=BORDER, zeroline=True,
+                       zerolinecolor=BORDER, showgrid=False),
+            yaxis=dict(gridcolor="rgba(0,0,0,0)", automargin=True,
+                       tickfont=dict(family=_LABEL_FONT, color=T1),
+                       range=[-0.6, len(xi_df) - 0.4]),
+            annotations=xi_annotations,
+        )
+        st.plotly_chart(fig_xi, use_container_width=True)
+
+    with perf_r:
+        pnl_df = df_open.sort_values("P&L %")
+        _pnl_h = max(420, len(pnl_df) * 38 + 80)
+        fig_pnl = go.Figure(go.Bar(
+            x=pnl_df["P&L %"], y=pnl_df["Company"], orientation="h",
+            marker_color=[NEG if v < 0 else POS for v in pnl_df["P&L %"]],
+            hovertemplate="<b>%{y}</b><br>P&L: %{x:+.1f}%<extra></extra>",
+        ))
+        pnl_annotations = [dict(
+            xref="paper", yref="y", x=0.99, y=row["Company"],
+            text=f"{row['P&L %']:+.1f}%", showarrow=False, xanchor="right",
+            font=dict(size=10, family=_LABEL_FONT, color="#ffffff"),
+        ) for _, row in pnl_df.iterrows()]
+        fig_pnl.update_layout(
+            **_chart_base(_pnl_h, t=44, r=60),
+            title=dict(text="Unrealised P&L %", font=dict(size=12, color=T1, family=FONT), x=0),
+            xaxis=dict(showticklabels=False, gridcolor=BORDER, zeroline=True,
+                       zerolinecolor=BORDER, showgrid=False),
+            yaxis=dict(gridcolor="rgba(0,0,0,0)", automargin=True,
+                       tickfont=dict(family=_LABEL_FONT, color=T1),
+                       range=[-0.6, len(pnl_df) - 0.4]),
+            annotations=pnl_annotations,
+        )
+        st.plotly_chart(fig_pnl, use_container_width=True)
+
+    st.divider()
+
+    # ── Portfolio ──────────────────────────────────────────────────────────────
+    lbl("Portfolio")
     comp_l, comp_r = st.columns([6, 4])
 
     with comp_l:
-        tm = df_open[["Company", "Sector", "Sub-Industry", "Cur. Value", "P&L %", "Weight %"]].copy()
-        tm["Sector"] = tm["Sector"].fillna("Other")
-        fig_tm = px.treemap(
-            tm,
-            path=[px.Constant("Portfolio"), "Sector", "Company"],
-            values="Cur. Value",
-            color="P&L %",
-            color_continuous_scale=[NEG, "#1e293b", POS],
-            color_continuous_midpoint=0,
-            custom_data=["Sub-Industry", "Weight %", "P&L %"],
-        )
-        fig_tm.update_traces(
-            texttemplate="<b>%{label}</b><br>%{percentRoot:.1%}",
-            hovertemplate=(
-                "<b>%{label}</b><br>"
-                "Value: %{value:,.0f}<br>"
-                "Weight: %{customdata[1]:.1f}%<br>"
-                "P&L: %{customdata[2]:+.1f}%<extra></extra>"
-            ),
-            textfont=dict(size=12, family=FONT),
-        )
-        fig_tm.update_layout(
-            paper_bgcolor=CARD, font=dict(color=T2, family=FONT),
-            height=360, margin=dict(t=10, b=10, l=10, r=10),
-            coloraxis_showscale=False,
-        )
-        st.plotly_chart(fig_tm, use_container_width=True)
+        if "selected_company" not in st.session_state:
+            st.session_state.selected_company = None
+
+        if st.session_state.selected_company:
+            co  = st.session_state.selected_company
+            match = df_open[df_open["Company"] == co]
+            if not match.empty:
+                r = match.iloc[0]
+                pc = POS if r["P&L"] >= 0 else NEG
+                ps = "+" if r["P&L"] >= 0 else ""
+                xi_str = f"{r['XIRR %']:+.1f}%" if pd.notna(r["XIRR %"]) else "—"
+                xi_col = (POS if pd.notna(r["XIRR %"]) and r["XIRR %"] >= 0 else NEG) if pd.notna(r["XIRR %"]) else T3
+                st.markdown(f"""
+<div class="company-expanded">
+  <div class="company-exp-name">{co}</div>
+  <div class="company-exp-sector">{r['Sub-Industry']} &nbsp;·&nbsp; {r['Sector']}</div>
+  <div class="company-exp-grid">
+    <div class="exp-metric">
+      <div class="exp-label">Invested Value</div>
+      <div class="exp-val">{inr(r['Total Cost'])}</div>
+    </div>
+    <div class="exp-metric">
+      <div class="exp-label">Current Value</div>
+      <div class="exp-val">{inr(r['Cur. Value'])}</div>
+    </div>
+    <div class="exp-metric">
+      <div class="exp-label">Profit / Loss</div>
+      <div class="exp-val" style="color:{pc}">{ps}{inr(r['P&L'])}</div>
+      <div class="exp-delta" style="color:{pc}">{r['P&L %']:+.1f}%</div>
+    </div>
+    <div class="exp-metric">
+      <div class="exp-label">Portfolio Weight</div>
+      <div class="exp-val">{r['Weight %']:.1f}%</div>
+    </div>
+    <div class="exp-metric">
+      <div class="exp-label">XIRR</div>
+      <div class="exp-val" style="color:{xi_col}">{xi_str}</div>
+    </div>
+    <div class="exp-metric">
+      <div class="exp-label">Days Held</div>
+      <div class="exp-val">{r['Days Held']}</div>
+    </div>
+  </div>
+  <div class="back-hint">click ← Portfolio Map to go back</div>
+</div>
+""", unsafe_allow_html=True)
+            if st.button("← Portfolio Map", key="back_to_tm",
+                         use_container_width=True):
+                st.session_state.selected_company = None
+                st.rerun()
+        else:
+            # Handle card click via query param
+            _pc = st.query_params.get("pc", "")
+            if _pc:
+                _co = urllib.parse.unquote(_pc)
+                if not df_open[df_open["Company"] == _co].empty:
+                    st.session_state.selected_company = _co
+                    st.query_params.clear()
+                    st.rerun()
+
+            # Handle cap bar click via query param
+            if "selected_cap" not in st.session_state:
+                st.session_state.selected_cap = None
+            _cap_qp = st.query_params.get("cap", "")
+            if _cap_qp in ["Large", "Mid", "Small"]:
+                st.session_state.selected_cap = _cap_qp
+                st.query_params.clear()
+                st.rerun()
+
+            card_df = df_open.sort_values("Weight %", ascending=False).reset_index(drop=True)
+            card_df["_Cap"] = card_df["Company"].map(CAP_CLASS).fillna("Mid")
+
+            # Cap allocation summary bar
+            _cap_alloc = {c: card_df[card_df["_Cap"] == c]["Weight %"].sum()
+                          for c in ["Large", "Mid", "Small"]}
+            # Derive third cap as remainder to guarantee sum = 100.0
+            _large_r = round(_cap_alloc.get("Large", 0), 1)
+            _mid_r   = round(_cap_alloc.get("Mid", 0), 1)
+            _small_r = round(100.0 - _large_r - _mid_r, 1)
+            _cap_rounded = {"Large": _large_r, "Mid": _mid_r, "Small": _small_r}
+            _bar_segs  = "".join(
+                f"<div style='width:{_cap_rounded[c]:.1f}%;background:{CAP_COLOR[c]};height:100%;'></div>"
+                for c in ["Large", "Mid", "Small"] if _cap_rounded.get(c, 0) > 0
+            )
+            _leg_items = "".join(
+                f"<a href='?cap={c}' target='_self' style='text-decoration:none;'>"
+                f"<span style='font-size:11px;color:{T2};display:flex;align-items:center;gap:5px;cursor:pointer;'>"
+                f"<span style='width:8px;height:8px;border-radius:50%;background:{CAP_COLOR[c]};display:inline-block;'></span>"
+                f"<span style='color:{T3};font-size:9px;text-transform:uppercase;letter-spacing:0.8px;'>{c} Cap</span>"
+                f"&nbsp;<b style='color:{T1};font-size:13px;'>{_cap_rounded.get(c,0):.1f}%</b></span></a>"
+                for c in ["Large", "Mid", "Small"] if _cap_rounded.get(c, 0) > 0
+            )
+            st.markdown(
+                f"<div style='display:flex;border-radius:6px;overflow:hidden;height:7px;margin-bottom:10px;gap:2px;'>{_bar_segs}</div>"
+                f"<div style='display:flex;gap:20px;margin-bottom:14px;'>{_leg_items}</div>",
+                unsafe_allow_html=True,
+            )
+
+            # Cap popup
+            if st.session_state.selected_cap:
+                _cap = st.session_state.selected_cap
+                _cap_sub = (
+                    card_df[card_df["_Cap"] == _cap][["Company", "Cur. Value", "Weight %", "P&L %"]]
+                    .sort_values("Cur. Value", ascending=False)
+                    .reset_index(drop=True)
+                )
+                _cap_sub["_val_str"] = _cap_sub["Cur. Value"].apply(inr)
+                _cap_popup(_cap, _cap_sub.to_dict("records"))
+                if st.button("← Back", key="close_cap_popup"):
+                    st.session_state.selected_cap = None
+                    st.rerun()
+
+            _NC = 3
+            for _i in range(0, len(card_df), _NC):
+                _batch = card_df.iloc[_i : _i + _NC]
+                _ccols = st.columns(_NC)
+                for _ccol, (_, r) in zip(_ccols, _batch.iterrows()):
+                    with _ccol:
+                        pnl_c    = POS if r["P&L %"] >= 0 else NEG
+                        xi_str   = f"{r['XIRR %']:+.1f}%" if pd.notna(r["XIRR %"]) else "—"
+                        xi_c     = (POS if pd.notna(r["XIRR %"]) and r["XIRR %"] >= 0 else NEG) \
+                                    if pd.notna(r["XIRR %"]) else T3
+                        cap_cls  = r["_Cap"]
+                        co_enc   = urllib.parse.quote(r["Company"])
+                        st.markdown(f"""
+<a href="?pc={co_enc}" target="_self" style="text-decoration:none;display:block;margin-bottom:10px">
+<div class="port-card">
+  <div class="port-accent" style="background:{pnl_c}"></div>
+  <div class="port-name">{r['Company']}</div>
+  <div class="port-sec">{r['Sector']}<span class="cap-chip cap-{cap_cls.lower()}">{cap_cls}</span></div>
+  <div class="port-metrics">
+    <div class="pm">
+      <div class="pm-label">Weight</div>
+      <div class="pm-val">{r['Weight %']:.1f}%</div>
+    </div>
+    <div class="pm">
+      <div class="pm-label">P&amp;L</div>
+      <div class="pm-val" style="color:{pnl_c}">{r['P&L %']:+.1f}%</div>
+    </div>
+    <div class="pm">
+      <div class="pm-label">XIRR</div>
+      <div class="pm-val" style="color:{xi_c}">{xi_str}</div>
+    </div>
+  </div>
+</div>
+</a>""", unsafe_allow_html=True)
 
     with comp_r:
         sect_df = (
@@ -654,10 +985,10 @@ def main():
         sect_colors = [SECTOR_PALETTE.get(s, ACC) for s in sect_df["Sector"]]
 
         fig_donut = go.Figure(go.Pie(
-            labels=sect_df["Sector"],
-            values=sect_df["Cur. Value"],
+            labels=sect_df["Sector"].tolist(),
+            values=sect_df["Cur. Value"].tolist(),
             hole=0.6,
-            marker=dict(colors=sect_colors, line=dict(color=BG, width=2)),
+            marker=dict(colors=sect_colors, line=dict(color=CARD, width=2)),
             textinfo="none",
             hovertemplate="<b>%{label}</b><br>%{percent}<extra></extra>",
         ))
@@ -669,10 +1000,39 @@ def main():
         fig_donut.update_layout(
             paper_bgcolor=CARD, showlegend=False,
             font=dict(color=T2, family=FONT),
-            height=180, margin=dict(t=0, b=0, l=0, r=0),
+            height=200, margin=dict(t=0, b=0, l=0, r=0),
+            hoverlabel=dict(
+                bgcolor="#09090b",
+                bordercolor=BORDER,
+                font=dict(family="Aptos Display, Segoe UI, sans-serif", color=T1, size=12),
+            ),
         )
-        st.plotly_chart(fig_donut, use_container_width=True)
+        if "last_sector_click" not in st.session_state:
+            st.session_state.last_sector_click = None
+        donut_clicks = plotly_events(
+            fig_donut, click_event=True, select_event=False,
+            override_height=200, key="donut_pie",
+        )
+        if donut_clicks:
+            pt = donut_clicks[0]
+            # pie charts return pointNumber; map it back to label
+            idx = pt.get("pointNumber", pt.get("pointIndex", None))
+            sect_label = sect_df.iloc[idx]["Sector"] if idx is not None and idx < len(sect_df) else ""
+            if sect_label and sect_label != st.session_state.last_sector_click:
+                st.session_state.last_sector_click = sect_label
+                sub = (
+                    df_open[df_open["Sector"] == sect_label]
+                    [["Company", "Cur. Value", "Weight %", "P&L %"]].copy()
+                    .sort_values("Cur. Value", ascending=False)
+                    .reset_index(drop=True)
+                )
+                sub["_val_str"] = sub["Cur. Value"].apply(inr)
+                if not sub.empty:
+                    _sector_popup(sect_label, sub.to_dict("records"))
+            elif sect_label == st.session_state.last_sector_click:
+                st.session_state.last_sector_click = None
 
+        # Sector legend bars
         for _, row in sect_df.iterrows():
             pct   = row["Weight %"]
             bar_w = int(pct / sect_df["Weight %"].max() * 100)
@@ -680,7 +1040,7 @@ def main():
             st.markdown(
                 f"<div style='display:flex;align-items:center;margin:5px 0;font-size:12px;"
                 f"font-family:{FONT};'>"
-                f"<span style='color:{T2};min-width:148px;'>{row['Sector']}</span>"
+                f"<span style='color:{T1};min-width:148px;'>{row['Sector']}</span>"
                 f"<div style='flex:1;margin:0 10px;background:{BORDER};border-radius:3px;height:5px;'>"
                 f"<div style='width:{bar_w}%;background:{col};height:5px;border-radius:3px;'></div></div>"
                 f"<span style='color:{T3};font-weight:700;min-width:38px;text-align:right;'>"
@@ -688,141 +1048,23 @@ def main():
                 unsafe_allow_html=True,
             )
 
+        st.markdown(
+            f"<div style='font-size:10px;color:{T3};letter-spacing:1px;margin:8px 0 2px 0;"
+            f"font-family:{FONT};'>CLICK A SLICE TO SEE BREAKDOWN</div>",
+            unsafe_allow_html=True,
+        )
+
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Concentration strip
     top1_row = df_open.nlargest(1, "Cur. Value").iloc[0]
     top3_w   = df_open.nlargest(3, "Cur. Value")["Weight %"].sum()
     top_sect = sect_df.iloc[0]
-    hhi      = (df_open["Weight %"] ** 2).sum()
-    hhi_lbl  = "Low" if hhi < 1500 else ("Moderate" if hhi < 2500 else "High")
-
-    cn1, cn2, cn3, cn4 = st.columns(4)
+    cn1, cn2, cn3 = st.columns(3)
     cn1.metric("Top Stock",    f"{top1_row['Weight %']:.1f}%", top1_row["Company"])
     cn2.metric("Top 3 Weight", f"{top3_w:.1f}%",              "of portfolio")
     cn3.metric("Top Sector",   f"{top_sect['Weight %']:.1f}%", top_sect["Sector"])
-    cn4.metric("Concentration (HHI)", f"{hhi:.0f}",            hhi_lbl)
 
-    st.divider()
-
-    # ── Performance ────────────────────────────────────────────────────────────
-    lbl("Performance")
-    perf_l, perf_r = st.columns(2)
-
-    with perf_l:
-        xi_df = df_open[["Company", "XIRR %"]].dropna().sort_values("XIRR %")
-        fig_xi = go.Figure(go.Bar(
-            x=xi_df["XIRR %"], y=xi_df["Company"], orientation="h",
-            marker_color=[NEG if v < 0 else POS for v in xi_df["XIRR %"]],
-            text=[f"{v:+.1f}%" for v in xi_df["XIRR %"]],
-            textposition="outside", cliponaxis=False,
-            textfont=dict(size=11, family=FONT),
-        ))
-        fig_xi.update_layout(
-            **_chart_base(380, t=44, r=80),
-            title=dict(text="XIRR by Stock", font=dict(size=12, color=T2, family=FONT), x=0),
-            xaxis=dict(title="XIRR %", gridcolor=BORDER, zeroline=True, zerolinecolor=BORDER,
-                       tickfont=dict(family=FONT)),
-            yaxis=dict(gridcolor="rgba(0,0,0,0)", automargin=True, tickfont=dict(family=FONT)),
-        )
-        st.plotly_chart(fig_xi, use_container_width=True)
-
-    with perf_r:
-        pnl_df = df_open.sort_values("P&L %")
-        fig_pnl = go.Figure(go.Bar(
-            x=pnl_df["P&L %"], y=pnl_df["Company"], orientation="h",
-            marker_color=[NEG if v < 0 else ACC for v in pnl_df["P&L %"]],
-            text=[f"{v:+.1f}%" for v in pnl_df["P&L %"]],
-            textposition="outside", cliponaxis=False,
-            textfont=dict(size=11, family=FONT),
-        ))
-        fig_pnl.update_layout(
-            **_chart_base(380, t=44, r=80),
-            title=dict(text="Unrealised P&L %", font=dict(size=12, color=T2, family=FONT), x=0),
-            xaxis=dict(title="P&L %", gridcolor=BORDER, zeroline=True, zerolinecolor=BORDER,
-                       tickfont=dict(family=FONT)),
-            yaxis=dict(gridcolor="rgba(0,0,0,0)", automargin=True, tickfont=dict(family=FONT)),
-        )
-        st.plotly_chart(fig_pnl, use_container_width=True)
-
-    # Holding period chart
-    hold_df = df_open[["Company", "Days Held"]].copy().sort_values("Days Held")
-    bucket_map = {
-        "< 6 Months":  GOLD,
-        "6M - 1 Year": ACC,
-        "1 - 2 Years": "#a78bfa",
-        "> 2 Years":   POS,
-    }
-    hold_df["Bucket"] = hold_df["Days Held"].apply(
-        lambda d: "< 6 Months" if d < 180
-        else "6M - 1 Year" if d < 365
-        else "1 - 2 Years" if d < 730
-        else "> 2 Years"
-    )
-    fig_hold = go.Figure()
-    for bucket, color in bucket_map.items():
-        sub = hold_df[hold_df["Bucket"] == bucket]
-        if sub.empty:
-            continue
-        fig_hold.add_trace(go.Bar(
-            name=bucket, x=sub["Company"], y=sub["Days Held"],
-            marker_color=color,
-            text=sub["Days Held"].astype(str) + "d",
-            textposition="outside", textfont=dict(size=10, family=FONT),
-        ))
-    fig_hold.update_layout(
-        **_chart_base(270, t=44, b=20, l=60, r=20),
-        title=dict(text="Holding Period by Stock (days)", font=dict(size=12, color=T2, family=FONT), x=0),
-        barmode="stack",
-        xaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(family=FONT)),
-        yaxis=dict(title="Days", gridcolor=BORDER, tickfont=dict(family=FONT)),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                    font=dict(color=T2, size=10, family=FONT), bgcolor="rgba(0,0,0,0)"),
-    )
-    st.plotly_chart(fig_hold, use_container_width=True)
-
-    st.divider()
-
-    # ── Open Positions Table ───────────────────────────────────────────────────
-    lbl("Open Positions")
-    show_cols = [
-        "Company", "Sector", "Sub-Industry",
-        "Qty", "Avg Cost", "CMP",
-        "Cur. Value", "Weight %",
-        "P&L", "P&L %", "XIRR %", "Days Held",
-    ]
-    st.dataframe(
-        df_open[show_cols].style
-        .format({
-            "Avg Cost":   "Rs {:.2f}",
-            "CMP":        "Rs {:.2f}",
-            "Cur. Value": lambda x: inr(x),
-            "P&L":        lambda x: inr(x),
-            "P&L %":      "{:+.2f}%",
-            "Weight %":   "{:.1f}%",
-            "XIRR %":     lambda x: f"{x:+.1f}%" if pd.notna(x) else "—",
-        })
-        .map(pnl_style, subset=["P&L", "P&L %", "XIRR %"]),
-        use_container_width=True, hide_index=True,
-    )
-
-    if not df_closed.empty:
-        lbl("Closed Positions")
-        closed_cols = ["Company", "Sector", "Qty", "Avg Cost", "CMP",
-                       "Cur. Value", "P&L", "P&L %", "Days Held", "XIRR %"]
-        st.dataframe(
-            df_closed[closed_cols].style
-            .format({
-                "Avg Cost":   "Rs {:.2f}",
-                "CMP":        "Rs {:.2f}",
-                "Cur. Value": lambda x: inr(x),
-                "P&L":        lambda x: inr(x),
-                "P&L %":      "{:+.2f}%",
-                "XIRR %":     lambda x: f"{x:+.1f}%" if pd.notna(x) else "—",
-            })
-            .map(pnl_style, subset=["P&L", "P&L %", "XIRR %"]),
-            use_container_width=True, hide_index=True,
-        )
 
     st.divider()
 
@@ -867,43 +1109,11 @@ def main():
     m2.metric("Invested",      inr(inv_co))
     m3.metric("Current Value", inr(cur_co))
 
-    cf_df = pd.DataFrame(cf_rows)
-    cf_df["Cash Flow"] = cf_df["Cash Flow"].apply(inr)
-    cf_df["Date"]      = cf_df["Date"].astype(str)
-    st.dataframe(cf_df[["Date", "Event", "Qty", "Cash Flow"]], use_container_width=True, hide_index=True)
-
-    fig_wf = go.Figure(go.Waterfall(
-        orientation="v",
-        x=[f"{r['Date']}  {r['Event'].split(' ')[0]}" for r in cf_rows],
-        y=[r["Cash Flow"] for r in cf_rows],
-        text=[inr(r["Cash Flow"]) for r in cf_rows],
-        textposition="outside",
-        connector={"line": {"color": BORDER}},
-        increasing={"marker": {"color": POS}},
-        decreasing={"marker": {"color": NEG}},
-        totals={"marker":    {"color": ACC}},
-    ))
-    fig_wf.update_layout(
-        **_chart_base(400, t=50, b=40, l=70, r=60),
-        title=dict(text=f"Cash Flow Timeline  {selected}",
-                   font=dict(size=12, color=T2, family=FONT), x=0),
-        xaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(family=FONT, size=10)),
-        yaxis=dict(title="Amount", gridcolor=BORDER, tickfont=dict(family=FONT)),
-    )
-    st.plotly_chart(fig_wf, use_container_width=True)
-
-    with st.expander("Transaction History (corporate-action adjusted)"):
-        hist = pd.DataFrame([{
-            "Date":      t["date"],
-            "Company":   DISPLAY.get(t["company"], t["company"]),
-            "Type":      t["type"],
-            "Product":   t["product_type"],
-            "Qty":       int(round(t["qty"])),
-            "Adj Price": f"Rs {t['price']:,.2f}",
-            "Value":     inr(t["value"]),
-            "Note":      t.get("note", ""),
-        } for t in txns]).sort_values("Date", ascending=False)
-        st.dataframe(hist, use_container_width=True, hide_index=True)
+    with st.expander("Transaction History — corporate-action adjusted"):
+        cf_df = pd.DataFrame(cf_rows)
+        cf_df["Cash Flow"] = cf_df["Cash Flow"].apply(inr)
+        cf_df["Date"]      = cf_df["Date"].astype(str)
+        st.dataframe(cf_df[["Date", "Event", "Qty", "Cash Flow"]], use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -924,61 +1134,37 @@ def main():
                     col.metric(status, str(count))
 
         st.markdown("<br>", unsafe_allow_html=True)
-        wl_l, wl_r = st.columns([4, 6])
 
-        with wl_l:
-            wl_sect = (
-                df_wl[df_wl["Sector"] != ""]["Sector"]
-                .value_counts().reset_index()
-            )
-            wl_sect.columns = ["Sector", "Count"]
-            wl_colors = [SECTOR_PALETTE.get(s, ACC) for s in wl_sect["Sector"]]
-            fig_wls = go.Figure(go.Bar(
-                x=wl_sect["Count"], y=wl_sect["Sector"],
-                orientation="h",
-                marker_color=wl_colors,
-                text=wl_sect["Count"], textposition="outside",
-                textfont=dict(family=FONT, size=11),
-            ))
-            fig_wls.update_layout(
-                **_chart_base(max(260, len(wl_sect) * 28 + 60), t=44, b=20, l=20, r=40),
-                title=dict(text="Watchlist by Sector", font=dict(size=12, color=T2, family=FONT), x=0),
-                xaxis=dict(gridcolor=BORDER, title="", tickfont=dict(family=FONT)),
-                yaxis=dict(gridcolor="rgba(0,0,0,0)", automargin=True, tickfont=dict(family=FONT)),
-            )
-            st.plotly_chart(fig_wls, use_container_width=True)
+        f1, f2, f3 = st.columns(3)
+        statuses    = sorted(s for s in df_wl["Status"].unique() if s)
+        sel_status  = f1.multiselect("Status",  statuses,  default=statuses)
+        analysts    = sorted(a for a in df_wl["Analyst"].unique() if a)
+        sel_analyst = f2.multiselect("Analyst", analysts, default=analysts) if analysts else []
+        sectors_wl  = sorted(s for s in df_wl["Sector"].unique() if s)
+        sel_sector  = f3.multiselect("Sector",  sectors_wl, default=sectors_wl) if sectors_wl else []
 
-        with wl_r:
-            f1, f2, f3 = st.columns(3)
-            statuses   = sorted(s for s in df_wl["Status"].unique() if s)
-            sel_status = f1.multiselect("Status",  statuses,  default=statuses)
-            analysts   = sorted(a for a in df_wl["Analyst"].unique() if a)
-            sel_analyst = f2.multiselect("Analyst", analysts, default=analysts) if analysts else []
-            sectors_wl  = sorted(s for s in df_wl["Sector"].unique() if s)
-            sel_sector  = f3.multiselect("Sector",  sectors_wl, default=sectors_wl) if sectors_wl else []
+        mask = df_wl["Status"].isin(sel_status) | ~df_wl["Status"].isin(statuses)
+        if sel_analyst:
+            mask &= df_wl["Analyst"].isin(sel_analyst) | ~df_wl["Analyst"].isin(analysts)
+        if sel_sector:
+            mask &= df_wl["Sector"].isin(sel_sector) | ~df_wl["Sector"].isin(sectors_wl)
+        df_show = df_wl[mask].reset_index(drop=True)
 
-            mask = df_wl["Status"].isin(sel_status) | ~df_wl["Status"].isin(statuses)
-            if sel_analyst:
-                mask &= df_wl["Analyst"].isin(sel_analyst) | ~df_wl["Analyst"].isin(analysts)
-            if sel_sector:
-                mask &= df_wl["Sector"].isin(sel_sector) | ~df_wl["Sector"].isin(sectors_wl)
-            df_show = df_wl[mask].reset_index(drop=True)
+        show_wl = ["Company", "Analyst", "Sector", "CMP (Rs)", "52W High (Rs)", "52W Low (Rs)",
+                   "P/E", "Last Disc. Date", "Last Disc. Price (Rs)", "Chg since LDP %",
+                   "Status", "Notes"]
 
-            show_wl = ["Company", "Analyst", "Sector", "CMP (Rs)", "52W High (Rs)", "52W Low (Rs)",
-                       "P/E", "Last Disc. Date", "Last Disc. Price (Rs)", "Chg since LDP %",
-                       "Status", "Notes"]
+        def _chg_color(val):
+            if isinstance(val, str):
+                if val.startswith("+"): return f"color:{POS};font-weight:600"
+                if val.startswith("-"): return f"color:{NEG};font-weight:600"
+            return ""
 
-            def _chg_color(val):
-                if isinstance(val, str):
-                    if val.startswith("+"): return f"color:{POS};font-weight:600"
-                    if val.startswith("-"): return f"color:{NEG};font-weight:600"
-                return ""
-
-            st.dataframe(
-                df_show[show_wl].style.map(_chg_color, subset=["Chg since LDP %"]),
-                use_container_width=True, hide_index=True,
-            )
-            st.caption(f"{len(df_show)} of {len(df_wl)} companies shown")
+        st.dataframe(
+            df_show[show_wl].style.map(_chg_color, subset=["Chg since LDP %"]),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(f"{len(df_show)} of {len(df_wl)} companies shown")
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.caption(
